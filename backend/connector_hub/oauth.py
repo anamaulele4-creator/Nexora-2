@@ -146,7 +146,7 @@ def _pkce_pair() -> tuple[str, str]:
 
 # --- início do fluxo --------------------------------------------------------------------------------
 async def start_authorization(settings: Settings, redis, *, provider: str, connector: str, user_id: uuid.UUID,
-                              scopes: list[str]) -> str:
+                              scopes: list[str], extra: dict | None = None) -> str:
     """Devolve o URL de autorização do fornecedor (o browser é redirecionado para lá)."""
     client_id, _ = _require_credentials(settings, provider)
     verifier = None
@@ -164,7 +164,7 @@ async def start_authorization(settings: Settings, redis, *, provider: str, conne
         params["allow_signup"] = "false"
         base = GITHUB_AUTHORIZE_URL
     state = await save_state(redis, OAuthState(user_id=str(user_id), connector=connector, provider=provider,
-                                               code_verifier=verifier))
+                                               code_verifier=verifier, extra=extra or {}))
     params["state"] = state
     return f"{base}?{urlencode(params)}"
 

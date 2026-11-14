@@ -116,3 +116,42 @@ async def test_e2e_full_app_admin_chat_and_api_v1(app, make_client, client, db_c
     text = "".join(c["choices"][0]["delta"].get("content", "") for c in chunks if c.get("choices"))
     print(f"[e2e /api/v1 stream] {len(chunks)} chunks: {text!r}")
     assert events[-1] == (None, "[DONE]") and len(chunks) > 3 and text.strip()
+
+
+async def test_e2e_tool_calling_native_and_openai_modes():
+    """O modelo real recebe ferramentas e o ciclo do agente termina com texto (ou pedido de ligar conta)."""
+    import httpx
+
+    from ai_core.agent import AgentEvent, ToolOutcome, run_agent
+    from ai_core.system_prompt import build_system_prompt
+    from ai_core.tool_calling import OllamaNativeTurns, OpenAICompatTurns
+    from connector_hub.agent_tools import connect_action, request_connection_tool
+
+    class Box:
+        calls: list = []
+
+        def definitions(self):
+            return [request_connection_tool()]
+
+        def label(self, name):
+            return name
+
+        async def call(self, name, arguments):
+            self.calls.append(name)
+            return ToolOutcome({"ok": True, "status": "connect_button_shown", "message": "A conta AINDA NÃO está ligada."},
+                               events=[AgentEvent("connect", connect_action(str(arguments.get("connector") or "github")))])
+
+    prompt = [ChatMessage("user", "Abre o GitHub e mostra os meus repositórios.")]
+    system = build_system_prompt({}, [], tools_enabled=True)
+    cfg = _cfg(max_tokens=300)
+    async with httpx.AsyncClient(trust_env=False) as http:
+        for turns in (OllamaNativeTurns(cfg, E2E_MODEL, http=http),
+                      OpenAICompatTurns("ollama", f"{E2E_URL}/v1/chat/completions", {}, E2E_MODEL, http=http,
+                                        timeout=300)):
+            box = Box()
+            items = [i async for i in run_agent(turns, system, prompt, box)]
+            events = [i for i in items if isinstance(i, AgentEvent)]
+            print(f"\n[e2e tools {type(turns).__name__}] ferramentas={box.calls} "
+                  f"eventos={[e.kind for e in events]} texto={items[-1].text!r}")
+            assert isinstance(items[-1], AIReply) and items[-1].text.strip()
+            assert all(e.data.get("connector") in (None, "github", "gmail", "google_drive", "shopify") for e in events)
