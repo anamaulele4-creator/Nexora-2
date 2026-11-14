@@ -1,5 +1,7 @@
 """Clientes HTTP dos fornecedores de IA (Gemini, Groq, OpenRouter e OpenAI), sem SDKs: só httpx.
 
+O motor local (Ollama) vive em ``ai_core.ollama`` e reutiliza estas classes base.
+
 Cada cliente recebe o histórico como uma lista de ``ChatMessage`` (role user/assistant)
 e devolve um ``AIReply``. Erros de rede, de autenticação ou de quota tornam-se
 ``ProviderError`` com uma mensagem curta e segura (a chave nunca aparece: vai num
@@ -8,13 +10,18 @@ cabeçalho, não no URL).
 
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Literal
 
 import httpx
 
-ProviderName = Literal["gemini", "groq", "openrouter", "openai"]
+ProviderName = Literal["ollama", "gemini", "groq", "openrouter", "openai"]
+# Fornecedores na nuvem configurados em ai_providers (o Ollama tem configuração própria).
 PROVIDERS: tuple[ProviderName, ...] = ("gemini", "groq", "openrouter", "openai")
+# Fornecedores sem plano gratuito: nunca usados como recurso automático sem autorização do admin.
+PAID_PROVIDERS: frozenset[str] = frozenset({"openai"})
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -40,12 +47,18 @@ class AIReply:
 class ProviderError(Exception):
     """Falha ao falar com um fornecedor. ``retryable`` indica se faz sentido tentar outro."""
 
-    def __init__(self, provider: str, message: str, *, status: int | None = None, retryable: bool = True) -> None:
+    def __init__(self, provider: str, message: str, *, status: int | None = None, retryable: bool = True,
+                 code: str | None = None) -> None:
         super().__init__(message)
         self.provider = provider
         self.message = message
         self.status = status
         self.retryable = retryable
+        self.code = code  # código estável opcional (ex.: local_engine_unreachable)
+
+
+# Um stream devolve pedaços de texto (str) e, no fim, um AIReply com o texto completo e o uso.
+StreamItem = str | AIReply
 
 
 def _error_message(resp: httpx.Response) -> str:
@@ -97,6 +110,31 @@ class _BaseClient:
     async def generate(self, messages: list[ChatMessage], system: str | None = None) -> AIReply:  # pragma: no cover
         raise NotImplementedError
 
+    async def stream(self, messages: list[ChatMessage], system: str | None = None) -> AsyncIterator[StreamItem]:
+        """Por defeito (ex.: Gemini) não há streaming real: a resposta chega num só pedaço."""
+        reply = await self.generate(messages, system)
+        yield reply.text
+        yield reply
+
+    async def _stream_lines(self, url: str, headers: dict[str, str], body: dict) -> AsyncIterator[str]:
+        """POST e devolve as linhas da resposta à medida que chegam (SSE ou NDJSON)."""
+        http = self._http or httpx.AsyncClient(timeout=self.timeout)
+        try:
+            async with http.stream("POST", url, headers=headers, json=body, timeout=self.timeout) as resp:
+                if resp.status_code >= 400:
+                    await resp.aread()
+                    raise ProviderError(self.name, _error_message(resp), status=resp.status_code)
+                async for line in resp.aiter_lines():
+                    if line:
+                        yield line
+        except httpx.TimeoutException as exc:
+            raise ProviderError(self.name, "Tempo de resposta esgotado") from exc
+        except httpx.HTTPError as exc:
+            raise ProviderError(self.name, f"Erro de rede: {type(exc).__name__}") from exc
+        finally:
+            if self._http is None:
+                await http.aclose()
+
 
 class GeminiClient(_BaseClient):
     name: ProviderName = "gemini"
@@ -134,17 +172,19 @@ class OpenAIClient(_BaseClient):
     label: str = "OpenAI"
     extra_headers: dict[str, str] = {}
 
-    async def generate(self, messages: list[ChatMessage], system: str | None = None) -> AIReply:
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json", **self.extra_headers}
+
+    def _body(self, messages: list[ChatMessage], system: str | None) -> dict:
         msgs: list[dict] = []
         if system:
             msgs.append({"role": "system", "content": system})
         msgs.extend({"role": m.role, "content": m.content} for m in messages)
         # Pedido mínimo (sem temperature/max_tokens) para funcionar também com modelos de raciocínio.
-        data = await self._post(
-            f"{self.base_url}/chat/completions",
-            {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json", **self.extra_headers},
-            {"model": self.model, "messages": msgs},
-        )
+        return {"model": self.model, "messages": msgs}
+
+    async def generate(self, messages: list[ChatMessage], system: str | None = None) -> AIReply:
+        data = await self._post(f"{self.base_url}/chat/completions", self._headers(), self._body(messages, system))
         choices = data.get("choices") or []
         text = ""
         if choices:
@@ -154,6 +194,39 @@ class OpenAIClient(_BaseClient):
         usage = data.get("usage") or {}
         return AIReply(text=text, provider=self.name, model=str(data.get("model") or self.model),
                        input_tokens=usage.get("prompt_tokens"), output_tokens=usage.get("completion_tokens"))
+
+
+    async def stream(self, messages: list[ChatMessage], system: str | None = None) -> AsyncIterator[StreamItem]:
+        body = {**self._body(messages, system), "stream": True, "stream_options": {"include_usage": True}}
+        parts: list[str] = []
+        usage: dict = {}
+        model = self.model
+        async for line in self._stream_lines(f"{self.base_url}/chat/completions", self._headers(), body):
+            if not line.startswith("data:"):
+                continue
+            payload = line[5:].strip()
+            if payload == "[DONE]":
+                break
+            try:
+                chunk = json.loads(payload)
+            except ValueError:
+                continue
+            if isinstance(chunk.get("error"), (dict, str)):
+                err = chunk["error"]
+                raise ProviderError(self.name, str(err.get("message") if isinstance(err, dict) else err)[:300])
+            model = str(chunk.get("model") or model)
+            if chunk.get("usage"):
+                usage = chunk["usage"]
+            for choice in chunk.get("choices") or []:
+                piece = (choice.get("delta") or {}).get("content")
+                if piece:
+                    parts.append(piece)
+                    yield piece
+        text = "".join(parts).strip()
+        if not text:
+            raise ProviderError(self.name, f"Resposta vazia ({self.label})", retryable=False)
+        yield AIReply(text=text, provider=self.name, model=model,
+                      input_tokens=usage.get("prompt_tokens"), output_tokens=usage.get("completion_tokens"))
 
 
 class GroqClient(OpenAIClient):

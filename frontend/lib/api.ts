@@ -1,6 +1,10 @@
 // Cliente da API. Mesmo domínio (rewrites do Next) + cookies httpOnly: o JavaScript
 // nunca vê os tokens.
 
+import { parseSseChunk, type SseEvent } from "./sse.ts";
+
+export { parseSseChunk, type SseEvent };
+
 export class ApiError extends Error {
   constructor(public status: number, public code: string, message: string) {
     super(message);
@@ -163,4 +167,149 @@ export type ProviderTestResult = {
   message: string;
   reply: string | null;
   latency_ms: number;
+};
+
+// --- Streaming (Server-Sent Events por POST) ----------------------------------------------
+/**
+ * POST que devolve SSE. Erros antes do stream (4xx/5xx em JSON) viram ApiError.
+ * ``signal`` permite parar (botão Parar): o servidor deteta e grava o texto já recebido.
+ */
+export async function postStream(
+  path: string,
+  body: unknown,
+  onEvent: (ev: SseEvent) => void,
+  signal?: AbortSignal,
+  allowRefresh = true,
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    if ((err as Error)?.name === "AbortError") throw err;
+    throw new ApiError(0, "network", "network error");
+  }
+  if (res.status === 401 && allowRefresh) {
+    if (await tryRefresh()) return postStream(path, body, onEvent, signal, false);
+  }
+  if (!res.ok || !res.body) {
+    const b = (await res.json().catch(() => null)) as { error?: { code?: string; message?: string } } | null;
+    throw new ApiError(res.status, b?.error?.code ?? "http_error", b?.error?.message ?? res.statusText);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parsed = parseSseChunk(buffer);
+    buffer = parsed.rest;
+    parsed.events.forEach(onEvent);
+  }
+  buffer += decoder.decode();
+  if (buffer.trim()) parseSseChunk(buffer + "\n\n").events.forEach(onEvent);
+}
+
+// --- Chat: modelos disponíveis ----------------------------------------------------------------
+export type ChatModels = {
+  local: {
+    configured: boolean;
+    enabled: boolean;
+    reachable: boolean | null;
+    default_model: string | null;
+    models: string[];
+    warning: string | null;
+  };
+  cloud: { provider: string; model: string }[];
+};
+
+// --- Admin: motor local (Ollama) ------------------------------------------------------------
+export type LocalEngine = {
+  configured: boolean;
+  base_url_hint: string | null;
+  token_configured: boolean;
+  token_masked: string | null;
+  enabled: boolean;
+  api_mode: "native" | "openai";
+  default_model: string | null;
+  temperature: number;
+  max_tokens: number;
+  context_length: number;
+  think: boolean;
+  ram_limit_gb: number;
+  allow_cloud_fallback: boolean;
+  allow_paid_fallback: boolean;
+  priority: number;
+  warning: string | null;
+  updated_at: string | null;
+  updated_by_email: string | null;
+  last_tested_at: string | null;
+  last_test_ok: boolean | null;
+  last_test_message: string | null;
+  encryption_ready?: boolean;
+};
+
+export type LocalEngineStatus = {
+  configured: boolean;
+  reachable: boolean;
+  version: string | null;
+  running: { name: string; size_bytes: number | null; context_length: number | null; expires_at: string | null }[];
+  warning: string | null;
+};
+
+export type LocalEngineTest = {
+  ok: boolean;
+  message: string;
+  version: string | null;
+  model: string | null;
+  reply: string | null;
+  installed: string[];
+  latency_ms: number;
+};
+
+export type InstalledModel = {
+  name: string;
+  size_bytes: number | null;
+  modified_at: string | null;
+  family: string | null;
+  parameter_size: string | null;
+  quantization: string | null;
+  is_default: boolean;
+  ram_gb: number | null;
+  capabilities: string[];
+  license: string | null;
+};
+
+export type CatalogModel = {
+  name: string;
+  description: string;
+  size_gb: number;
+  ram_gb: number;
+  capabilities: string[];
+  license: string;
+  recommended: boolean;
+  installed: boolean;
+  fits: boolean;
+};
+
+// --- Admin: tokens da API v1 -----------------------------------------------------------------
+export type ApiKey = {
+  id: string;
+  name: string;
+  key_prefix: string;
+  scopes: string[];
+  created_at: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  created_by_email: string | null;
+  requests_30d: number;
+  tokens_30d: number;
+  token?: string;
 };

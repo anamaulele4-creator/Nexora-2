@@ -7,6 +7,8 @@ import { AppNav, useMe } from "@/components/AppNav";
 import { Alert } from "@/components/AuthShell";
 import { Header } from "@/components/Header";
 import { useUi } from "@/components/Providers";
+import { ApiKeysSection } from "@/components/admin/ApiKeysSection";
+import { LocalEngineSection } from "@/components/admin/LocalEngineSection";
 import { StatCard } from "@/dashboard/StatCard";
 import {
   api,
@@ -115,6 +117,8 @@ export function AdminView() {
           )}
         </section>
 
+        <LocalEngineSection fmtDate={fmtDate} />
+
         <section>
           <h2 className="font-semibold">{t("admin.providers")}</h2>
           <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">{t("admin.providers.lead")}</p>
@@ -128,6 +132,8 @@ export function AdminView() {
             ))}
           </div>
         </section>
+
+        <ApiKeysSection fmtDate={fmtDate} />
 
         <UsersSection fmtDate={fmtDate} />
       </main>

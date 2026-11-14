@@ -15,6 +15,8 @@ EXPECTED_TABLES = {
     "files", "execution_results", "audit_logs", "usage_metrics", "workflows", "workflow_runs", "notifications",
     # 0005: fornecedores de IA (tabela de sistema) e chat
     "ai_providers", "conversations", "messages",
+    # 0007: motor local (sistema), tokens da API v1 e registo de uso
+    "local_ai_engine", "api_keys", "api_usage_logs",
 }
 
 
@@ -48,7 +50,8 @@ async def test_every_table_has_user_id_and_utc_timestamps(db_conn):
         by_table.setdefault(c["table_name"], {})[c["column_name"]] = c["data_type"]
     for table, columns in by_table.items():
         # ai_providers é configuração global (sem dono): regista quem alterou
-        owner_col = {"users": "id", "workspaces": "owner_user_id", "ai_providers": "updated_by"}.get(table, "user_id")
+        owner_col = {"users": "id", "workspaces": "owner_user_id", "ai_providers": "updated_by",
+                     "local_ai_engine": "updated_by"}.get(table, "user_id")
         assert owner_col in columns, f"{table} sem {owner_col}"
         for name, dtype in columns.items():
             if name.endswith("_at"):

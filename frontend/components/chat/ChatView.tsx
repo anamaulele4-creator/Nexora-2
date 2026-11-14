@@ -6,10 +6,30 @@ import { AppNav, useMe } from "@/components/AppNav";
 import { Alert } from "@/components/AuthShell";
 import { Header } from "@/components/Header";
 import { useUi } from "@/components/Providers";
-import { api, del, post, type ChatMessage, type Conversation, type SendMessageResult } from "@/lib/api";
+import {
+  ApiError,
+  api,
+  del,
+  post,
+  postStream,
+  type ChatMessage,
+  type ChatModels,
+  type Conversation,
+  type SendMessageResult,
+} from "@/lib/api";
 import { errorText } from "@/lib/errors";
 
 type Pending = { content: string };
+
+// Valor do seletor: "auto" | "ollama|<modelo>" | "cloud|<fornecedor>|<modelo>"
+function selectionBody(value: string): { provider?: string; model?: string } {
+  if (value.startsWith("ollama|")) return { provider: "ollama", model: value.slice(7) };
+  if (value.startsWith("cloud|")) {
+    const [, provider, ...rest] = value.split("|");
+    return { provider, model: rest.join("|") || undefined };
+  }
+  return {};
+}
 
 export function ChatView() {
   const { t, lang } = useUi();
@@ -22,6 +42,11 @@ export function ChatView() {
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [models, setModels] = useState<ChatModels | null>(null);
+  const [selected, setSelected] = useState("auto");
+  const [streamText, setStreamText] = useState("");
+  const [info, setInfo] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -64,8 +89,17 @@ export function ChatView() {
   }, [me, loadConversations, openConversation]);
 
   useEffect(() => {
+    if (!me) return;
+    api<ChatModels>("/api/chat/models").then(setModels).catch(() => setModels(null));
+  }, [me]);
+
+  useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, pending]);
+  }, [messages, pending, streamText]);
+
+  function stop() {
+    abortRef.current?.abort();
+  }
 
   function newConversation() {
     // A conversa só é criada no servidor quando a primeira mensagem é enviada.
@@ -95,9 +129,14 @@ export function ChatView() {
     const content = draft.trim();
     if (!content || pending) return;
     setError(null);
+    setInfo(null);
     setPending({ content });
+    setStreamText("");
     setDraft("");
     let convId = activeId;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    let finished = false;
     try {
       if (!convId) {
         const conv = await post<Conversation>("/api/chat/conversations", {});
@@ -105,17 +144,38 @@ export function ChatView() {
         setActiveId(conv.id);
         setConversations((prev) => [conv, ...(prev ?? [])]);
       }
-      const res = await post<SendMessageResult>(`/api/chat/conversations/${convId}/messages`, { content });
-      setMessages((prev) => [...prev, res.user_message, res.assistant_message]);
-      setConversations((prev) => {
-        const rest = (prev ?? []).filter((c) => c.id !== res.conversation.id);
-        return [res.conversation, ...rest];
-      });
+      await postStream(`/api/chat/conversations/${convId}/messages/stream`, { content, ...selectionBody(selected) }, (ev) => {
+        const data = JSON.parse(ev.data);
+        if (ev.event === "delta") {
+          setStreamText((prev) => prev + (data.text as string));
+        } else if (ev.event === "done") {
+          finished = true;
+          const res = data as SendMessageResult;
+          setMessages((prev) => [...prev, res.user_message, res.assistant_message]);
+          setConversations((prev) => {
+            const rest = (prev ?? []).filter((c) => c.id !== res.conversation.id);
+            return [res.conversation, ...rest];
+          });
+        } else if (ev.event === "error") {
+          finished = true;
+          throw new ApiError(503, data.code ?? "ai_provider_error", data.message ?? "");
+        }
+      }, controller.signal);
+      if (!finished) throw new ApiError(0, "network", "stream ended");
     } catch (err) {
-      setError(errorText(err, t));
-      setDraft(content); // devolve o texto para reenviar
+      if ((err as Error)?.name === "AbortError") {
+        // o servidor grava o texto já recebido; recarrega a conversa para o mostrar
+        setInfo(t("chat.stopped"));
+        const id = convId;
+        if (id) window.setTimeout(() => void openConversation(id).then(() => loadConversations()), 800);
+      } else {
+        setError(errorText(err, t));
+        setDraft(content); // devolve o texto para reenviar
+      }
     } finally {
+      abortRef.current = null;
       setPending(null);
+      setStreamText("");
       inputRef.current?.focus();
     }
   }
@@ -170,6 +230,9 @@ export function ChatView() {
   );
 
   const activeTitle = conversations?.find((c) => c.id === activeId)?.title;
+  // aviso "Motor local não configurado": ao escolher o motor local, ou quando não há nenhuma alternativa
+  const localUnusable = !!models && (!!models.local.warning || models.local.models.length === 0);
+  const localWarning = localUnusable && (selected.startsWith("ollama|") || models.cloud.length === 0);
 
   return (
     <div className="flex h-[100dvh] flex-col">
@@ -212,6 +275,9 @@ export function ChatView() {
                 {pending && (
                   <>
                     <MessageBubble role="user" content={pending.content} label={t("chat.you")} />
+                    {streamText ? (
+                      <MessageBubble role="assistant" content={streamText + " ▍"} label={t("chat.ai")} />
+                    ) : (
                     <li className="flex justify-start">
                       <div className="rounded-2xl bg-slate-100 px-4 py-2 text-sm text-slate-500 dark:bg-slate-800">
                         <span className="inline-flex items-center gap-2">
@@ -220,6 +286,7 @@ export function ChatView() {
                         </span>
                       </div>
                     </li>
+                    )}
                   </>
                 )}
               </ol>
@@ -230,6 +297,40 @@ export function ChatView() {
           <form onSubmit={send} className="border-t border-slate-200 p-3 dark:border-slate-800 sm:px-6">
             <div className="mx-auto max-w-3xl">
               {error && <div className="mb-2"><Alert tone="error">{error}</Alert></div>}
+              {info && !error && <div className="mb-2"><Alert tone="info">{info}</Alert></div>}
+              {localWarning && (
+                <div className="mb-2">
+                  <Alert tone="info">
+                    <strong>{models?.local.warning ?? t("chat.local.notConfigured")}</strong>
+                    {!models?.local.configured && <> · {t("chat.local.notConfiguredHint")}</>}
+                  </Alert>
+                </div>
+              )}
+              <div className="mb-2 flex items-center gap-2">
+                <label htmlFor="chat-model" className="text-xs text-slate-500">{t("chat.model")}</label>
+                <select id="chat-model" className="input h-8 max-w-xs py-0 text-xs" value={selected}
+                  onChange={(e) => setSelected(e.target.value)} disabled={!!pending}>
+                  <option value="auto">{t("chat.model.auto")}</option>
+                  <optgroup label={t("chat.model.local")}>
+                    {models && models.local.models.length > 0 ? (
+                      models.local.models.map((m) => (
+                        <option key={m} value={`ollama|${m}`}>
+                          {m}{m === models.local.default_model ? ` (${t("chat.model.default")})` : ""}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="ollama|" disabled>{models?.local.warning ?? t("chat.local.notConfigured")}</option>
+                    )}
+                  </optgroup>
+                  {models && models.cloud.length > 0 && (
+                    <optgroup label={t("chat.model.cloud")}>
+                      {models.cloud.map((c) => (
+                        <option key={c.provider} value={`cloud|${c.provider}|${c.model}`}>{c.provider} · {c.model}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                </select>
+              </div>
               <div className="flex items-end gap-2">
                 <label className="sr-only" htmlFor="chat-input">{t("chat.placeholder")}</label>
                 <textarea
@@ -244,9 +345,15 @@ export function ChatView() {
                   className="input max-h-48 min-h-[2.75rem] flex-1 resize-y"
                   disabled={!!pending}
                 />
-                <button type="submit" className="btn-primary h-11 shrink-0" disabled={!!pending || !draft.trim()}>
-                  {pending ? "…" : t("chat.send")}
-                </button>
+                {pending ? (
+                  <button type="button" className="btn-ghost h-11 shrink-0" onClick={stop}>
+                    ■ {t("chat.stop")}
+                  </button>
+                ) : (
+                  <button type="submit" className="btn-primary h-11 shrink-0" disabled={!draft.trim()}>
+                    {t("chat.send")}
+                  </button>
+                )}
               </div>
               <p className="mt-1 hidden text-xs text-slate-500 sm:block">{t("chat.hint")}</p>
             </div>
