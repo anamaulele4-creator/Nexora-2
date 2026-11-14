@@ -116,7 +116,7 @@ async def test_providers_key_is_encrypted_and_masked(app, make_client, db_conn):
     assert r.status_code == 200
     body = r.json()
     assert body["encryption_ready"] is True
-    assert [p["provider"] for p in body["items"]] == ["gemini", "openai"]
+    assert [p["provider"] for p in body["items"]] == ["gemini", "groq", "openrouter", "openai"]
     assert all(p["configured"] is False and p["key_masked"] is None for p in body["items"])
     assert body["items"][0]["model"] == "gemini-flash-latest"
 

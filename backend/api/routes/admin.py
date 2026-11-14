@@ -62,12 +62,16 @@ def _settings(request: Request) -> Settings:
 
 
 def _default_model(settings: Settings, provider: str) -> str:
-    return settings.gemini_default_model if provider == "gemini" else settings.openai_default_model
+    return {
+        "gemini": settings.gemini_default_model,
+        "groq": settings.groq_default_model,
+        "openrouter": settings.openrouter_default_model,
+    }.get(provider, settings.openai_default_model)
 
 
 def _check_provider(provider: str) -> str:
     if provider not in PROVIDERS:
-        raise ApiError(404, "unknown_provider", "Fornecedor desconhecido (usa gemini ou openai)")
+        raise ApiError(404, "unknown_provider", "Fornecedor desconhecido (usa gemini, groq, openrouter ou openai)")
     return provider
 
 

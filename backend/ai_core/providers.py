@@ -1,4 +1,4 @@
-"""Clientes HTTP dos fornecedores de IA (Gemini e OpenAI), sem SDKs: só httpx.
+"""Clientes HTTP dos fornecedores de IA (Gemini, Groq, OpenRouter e OpenAI), sem SDKs: só httpx.
 
 Cada cliente recebe o histórico como uma lista de ``ChatMessage`` (role user/assistant)
 e devolve um ``AIReply``. Erros de rede, de autenticação ou de quota tornam-se
@@ -13,11 +13,13 @@ from typing import Literal
 
 import httpx
 
-ProviderName = Literal["gemini", "openai"]
-PROVIDERS: tuple[ProviderName, ...] = ("gemini", "openai")
+ProviderName = Literal["gemini", "groq", "openrouter", "openai"]
+PROVIDERS: tuple[ProviderName, ...] = ("gemini", "groq", "openrouter", "openai")
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 OPENAI_BASE_URL = "https://api.openai.com/v1"
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
 @dataclass(frozen=True)
@@ -125,7 +127,12 @@ class GeminiClient(_BaseClient):
 
 
 class OpenAIClient(_BaseClient):
+    """Cliente no formato /chat/completions da OpenAI (também usado por Groq e OpenRouter)."""
+
     name: ProviderName = "openai"
+    base_url: str = OPENAI_BASE_URL
+    label: str = "OpenAI"
+    extra_headers: dict[str, str] = {}
 
     async def generate(self, messages: list[ChatMessage], system: str | None = None) -> AIReply:
         msgs: list[dict] = []
@@ -134,8 +141,8 @@ class OpenAIClient(_BaseClient):
         msgs.extend({"role": m.role, "content": m.content} for m in messages)
         # Pedido mínimo (sem temperature/max_tokens) para funcionar também com modelos de raciocínio.
         data = await self._post(
-            f"{OPENAI_BASE_URL}/chat/completions",
-            {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+            f"{self.base_url}/chat/completions",
+            {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json", **self.extra_headers},
             {"model": self.model, "messages": msgs},
         )
         choices = data.get("choices") or []
@@ -143,10 +150,23 @@ class OpenAIClient(_BaseClient):
         if choices:
             text = str((choices[0].get("message") or {}).get("content") or "").strip()
         if not text:
-            raise ProviderError(self.name, "Resposta vazia da OpenAI", retryable=False)
+            raise ProviderError(self.name, f"Resposta vazia ({self.label})", retryable=False)
         usage = data.get("usage") or {}
         return AIReply(text=text, provider=self.name, model=str(data.get("model") or self.model),
                        input_tokens=usage.get("prompt_tokens"), output_tokens=usage.get("completion_tokens"))
+
+
+class GroqClient(OpenAIClient):
+    name: ProviderName = "groq"
+    base_url = GROQ_BASE_URL
+    label = "Groq"
+
+
+class OpenRouterClient(OpenAIClient):
+    name: ProviderName = "openrouter"
+    base_url = OPENROUTER_BASE_URL
+    label = "OpenRouter"
+    extra_headers = {"HTTP-Referer": "https://connector-ai-2yn3.onrender.com", "X-Title": "CONNECTOR AI"}
 
 
 def make_client(provider: str, api_key: str, model: str, *, timeout: float = 60,
@@ -155,4 +175,8 @@ def make_client(provider: str, api_key: str, model: str, *, timeout: float = 60,
         return GeminiClient(api_key, model, timeout=timeout, http=http)
     if provider == "openai":
         return OpenAIClient(api_key, model, timeout=timeout, http=http)
+    if provider == "groq":
+        return GroqClient(api_key, model, timeout=timeout, http=http)
+    if provider == "openrouter":
+        return OpenRouterClient(api_key, model, timeout=timeout, http=http)
     raise ValueError(f"fornecedor desconhecido: {provider}")

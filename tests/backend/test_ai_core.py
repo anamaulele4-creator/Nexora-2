@@ -56,7 +56,7 @@ def test_provider_order_setting_validation():
     from conftest import make_settings
 
     s = make_settings(ai_provider_order="openai")
-    assert s.ai_provider_order == ["openai", "gemini"]
+    assert s.ai_provider_order == ["openai", "gemini", "groq", "openrouter"]
     with pytest.raises(Exception):
         make_settings(ai_provider_order="gemini,claude")
     s = make_settings(admin_emails=" A@Example.com, b@example.com ")

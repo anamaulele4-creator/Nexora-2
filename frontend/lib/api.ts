@@ -139,7 +139,7 @@ export type AdminUser = {
 export type AdminUsersPage = { items: AdminUser[]; page: number; page_size: number; total: number; pages: number };
 
 export type AiProvider = {
-  provider: "gemini" | "openai";
+  provider: "gemini" | "groq" | "openrouter" | "openai";
   configured: boolean;
   key_last4: string | null;
   key_masked: string | null;

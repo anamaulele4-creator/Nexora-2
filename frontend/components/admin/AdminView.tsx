@@ -22,6 +22,8 @@ import { errorText } from "@/lib/errors";
 
 const PROVIDER_INFO: Record<AiProvider["provider"], { name: string; keyUrl: string }> = {
   gemini: { name: "Google Gemini", keyUrl: "https://aistudio.google.com/app/apikey" },
+  groq: { name: "Groq", keyUrl: "https://console.groq.com/keys" },
+  openrouter: { name: "OpenRouter", keyUrl: "https://openrouter.ai/settings/keys" },
   openai: { name: "OpenAI", keyUrl: "https://platform.openai.com/api-keys" },
 };
 

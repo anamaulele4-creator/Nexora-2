@@ -101,9 +101,11 @@ class Settings(BaseSettings):
     admin_emails: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["garenadario3@gmail.com"])
 
     # IA e chat (chaves dos fornecedores ficam cifradas na BD, definidas em /admin) ----------
-    ai_provider_order: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["gemini", "openai"])
+    ai_provider_order: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["gemini", "groq", "openrouter", "openai"])
     gemini_default_model: str = "gemini-flash-latest"
     openai_default_model: str = "gpt-4o-mini"
+    groq_default_model: str = "llama-3.3-70b-versatile"
+    openrouter_default_model: str = "openrouter/free"
     ai_request_timeout_seconds: float = Field(default=60, ge=5, le=300)
     chat_rate_limit_per_hour: int = Field(default=60, ge=1, le=10000)
     chat_history_messages: int = Field(default=20, ge=2, le=100)
@@ -131,14 +133,15 @@ class Settings(BaseSettings):
     def _split_order(cls, v: object) -> object:
         items = [p.strip().lower() for p in v.split(",") if p.strip()] if isinstance(v, str) else v
         if isinstance(items, list):
-            unknown = [p for p in items if p not in ("gemini", "openai")]
+            allowed = ("gemini", "groq", "openrouter", "openai")
+            unknown = [p for p in items if p not in allowed]
             if unknown:
-                raise ValueError(f"AI_PROVIDER_ORDER só aceita gemini e openai (recebi: {', '.join(unknown)})")
+                raise ValueError(f"AI_PROVIDER_ORDER só aceita {', '.join(allowed)} (recebi: {', '.join(unknown)})")
             seen: list[str] = []
             for p in items:
                 if p not in seen:
                     seen.append(p)
-            for p in ("gemini", "openai"):  # os que faltarem ficam no fim
+            for p in allowed:  # os que faltarem ficam no fim
                 if p not in seen:
                     seen.append(p)
             return seen
