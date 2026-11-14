@@ -8,6 +8,7 @@ import { Alert } from "@/components/AuthShell";
 import { Header } from "@/components/Header";
 import { useUi } from "@/components/Providers";
 import { ApiKeysSection } from "@/components/admin/ApiKeysSection";
+import { AiPolicySection, ConnectorsSection } from "@/components/admin/ConnectorsSection";
 import { LocalEngineSection } from "@/components/admin/LocalEngineSection";
 import { StatCard } from "@/dashboard/StatCard";
 import {
@@ -132,6 +133,10 @@ export function AdminView() {
             ))}
           </div>
         </section>
+
+        <AiPolicySection />
+
+        <ConnectorsSection />
 
         <ApiKeysSection fmtDate={fmtDate} />
 

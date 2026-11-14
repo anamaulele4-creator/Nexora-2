@@ -5,6 +5,8 @@ const KNOWN = new Set([
   "rate_limited", "invalid_or_expired_token", "validation_error",
   "forbidden", "ai_unavailable", "ai_provider_error", "message_too_long", "key_required",
   "encryption_not_configured", "not_found", "local_engine_not_configured",
+  "invalid_current_password", "same_password", "paid_provider_disabled", "not_supported", "cannot_revoke_current",
+  "oauth_not_configured", "invalid_shop_domain", "invalid_shopify_token", "connector_not_found", "not_connected",
 ]);
 
 // Erros do motor local: a mensagem do servidor é específica e útil (ex.: modelo em falta, RAM).
