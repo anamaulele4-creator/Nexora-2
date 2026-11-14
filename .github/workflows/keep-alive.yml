@@ -10,7 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Ping API e site
+      - name: Ping API
         run: |
           curl -fsS -m 90 --retry 3 --retry-delay 20 https://connector-ai-api.onrender.com/health || true
-          curl -fsS -m 90 --retry 3 --retry-delay 20 -o /dev/null https://connector-ai-2yn3.onrender.com/ || true
