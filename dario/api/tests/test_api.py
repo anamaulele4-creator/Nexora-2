@@ -127,3 +127,10 @@ def test_recommend_cpu_only():
 def test_v1_models_lists_dario(client):
     ids = [m["id"] for m in client.get("/v1/models", headers=USER).json()["data"]]
     assert ids == ["dario:auto", "qwen3:8b"]
+
+
+def test_memory_routes_take_json_body():
+    """Regressão: os modelos do corpo têm de ser visíveis ao FastAPI (antes caíam como query)."""
+    app = create_app(Settings(api_token="user-token", database_url=""), transport=httpx.MockTransport(fake_ollama))
+    route = next(r for r in app.routes if getattr(r, "path", "") == "/dario/v1/memory")
+    assert [p.name for p in route.dependant.body_params] == ["body"]

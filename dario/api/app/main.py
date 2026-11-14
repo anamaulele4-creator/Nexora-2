@@ -43,12 +43,23 @@ VIRTUAL_TAG = {"name": "dario:auto", "model": "dario:auto", "size": 0, "digest":
 HOP_HEADERS = {"content-length", "transfer-encoding", "connection", "keep-alive", "content-encoding"}
 
 
+class MemoryIn(BaseModel):
+    namespace: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1, max_length=20_000)
+    metadata: dict = Field(default_factory=dict)
+
+class MemoryQuery(BaseModel):
+    namespace: str = Field(min_length=1, max_length=200)
+    query: str = Field(min_length=1, max_length=5_000)
+    k: int = Field(default=5, ge=1, le=50)
+
+
 def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
     settings = settings or get_settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.http = httpx.AsyncClient(base_url=settings.ollama_url, transport=transport,
+        app.state.http = httpx.AsyncClient(base_url=settings.ollama_url, transport=transport, trust_env=False,
                                            timeout=httpx.Timeout(settings.request_timeout, connect=10))
         app.state.memory = None
         if settings.database_url:
@@ -83,8 +94,8 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
         checks = {}
         try:
             r = await request.app.state.http.get("/api/version", timeout=5)
-            checks["ollama"] = r.json().get("version") if r.status_code == 200 else f"http {r.status_code}"
-        except httpx.HTTPError:
+            checks["ollama"] = r.json().get("version") if r.status_code == 200 else None
+        except (httpx.HTTPError, ValueError):
             checks["ollama"] = None
         checks["memory"] = bool(request.app.state.memory) if settings.database_url else "desligada"
         ok = bool(checks["ollama"]) and checks["memory"] is not False
@@ -112,16 +123,6 @@ def create_app(settings: Settings | None = None, transport: httpx.AsyncBaseTrans
         return {"model": chosen, "task": task, "installed": installed}
 
     # ------------------------------------------------------------------ memória
-    class MemoryIn(BaseModel):
-        namespace: str = Field(min_length=1, max_length=200)
-        content: str = Field(min_length=1, max_length=20_000)
-        metadata: dict = Field(default_factory=dict)
-
-    class MemoryQuery(BaseModel):
-        namespace: str = Field(min_length=1, max_length=200)
-        query: str = Field(min_length=1, max_length=5_000)
-        k: int = Field(default=5, ge=1, le=50)
-
     def memory_or_503(request: Request) -> Memory:
         mem = request.app.state.memory
         if not mem:

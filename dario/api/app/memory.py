@@ -40,8 +40,14 @@ class Memory:
     async def close(self) -> None:
         await self.pool.close()
 
-    async def embed(self, text: str) -> list[float]:
-        resp = await self.http.post(f"{self.ollama_url}/api/embed", json={"model": self.model, "input": text})
+    def _prefixed(self, text: str, kind: str) -> str:
+        # nomic-embed-text foi treinado com prefixos de tarefa; sem eles a pesquisa perde qualidade
+        if "nomic-embed" in self.model:
+            return f"{'search_query' if kind == 'query' else 'search_document'}: {text}"
+        return text
+
+    async def embed(self, text: str, kind: str = "document") -> list[float]:
+        resp = await self.http.post("/api/embed", json={"model": self.model, "input": self._prefixed(text, kind)})
         resp.raise_for_status()
         vec = resp.json()["embeddings"][0]
         if len(vec) != self.dim:
@@ -57,7 +63,7 @@ class Memory:
                 namespace, content, json.dumps(metadata), _vec(vec))
 
     async def search(self, namespace: str, query: str, k: int) -> list[dict]:
-        vec = await self.embed(query)
+        vec = await self.embed(query, "query")
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, content, metadata::text AS metadata, created_at, "
