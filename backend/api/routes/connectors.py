@@ -130,7 +130,18 @@ async def _status(db: Database, principal: Principal, key: str, settings: Settin
 
 
 # --- ligar ------------------------------------------------------------------------------------------
-async def _start_oauth(request: Request, principal: Principal, db: Database, key: str) -> dict:
+def _return_extra(return_to: str | None, conversation: uuid.UUID | None) -> dict:
+    """Para onde voltar depois do OAuth. Só destinos internos conhecidos (nada de URLs livres)."""
+    if return_to != "chat":
+        return {}
+    extra = {"return_to": "chat"}
+    if conversation is not None:
+        extra["conversation"] = str(conversation)
+    return extra
+
+
+async def _start_oauth(request: Request, principal: Principal, db: Database, key: str,
+                       extra: dict | None = None) -> dict:
     definition = await _definition(db, principal, key)
     spec = connection_spec(key)
     assert spec is not None
@@ -141,7 +152,8 @@ async def _start_oauth(request: Request, principal: Principal, db: Database, key
     scopes = list(dict.fromkeys([*definition["scopes"], *spec.identity_scopes]))
     try:
         url = await oauth.start_authorization(_settings(request), request.app.state.redis, provider=spec.oauth_provider,
-                                              connector=key, user_id=principal.user_id, scopes=scopes)
+                                              connector=key, user_id=principal.user_id, scopes=scopes,
+                                              extra=extra)
     except ConnectorError as exc:
         raise _connector_error(exc) from exc
     return {"connector": key, "method": "oauth", "authorize_url": url}
@@ -162,12 +174,15 @@ async def oauth_start(provider: str, request: Request, connector: str | None = Q
 
 @router.post("/{key}/connect")
 async def connect(key: str, request: Request, body: ConnectIn | None = None,
+                  return_to: str | None = Query(None, pattern="^chat$"),
+                  conversation: uuid.UUID | None = Query(None),
                   principal: Principal = Depends(current_principal), db: Database = Depends(get_db)) -> dict:
+    """``return_to=chat`` (opcional, com ``conversation``): depois do OAuth volta ao chat em vez de /conectores."""
     spec = connection_spec(key)
     if spec is None:
         raise ApiError(404, "connector_not_found", "Conector desconhecido ou ainda sem ligação disponível")
     if spec.method == "oauth":
-        return await _start_oauth(request, principal, db, key)
+        return await _start_oauth(request, principal, db, key, _return_extra(return_to, conversation))
 
     # Shopify: domínio + token de Admin API, verificados na loja antes de gravar
     definition = await _definition(db, principal, key)
@@ -196,8 +211,17 @@ async def connect(key: str, request: Request, body: ConnectIn | None = None,
     return await _status(db, principal, key, settings)
 
 
-def _frontend_redirect(settings: Settings, **params: str) -> RedirectResponse:
-    return RedirectResponse(f"{settings.frontend_url}/conectores?{urlencode(params)}", status_code=302)
+def _frontend_redirect(settings: Settings, *, _extra: dict | None = None, **params: str) -> RedirectResponse:
+    page = "/conectores"
+    if _extra and _extra.get("return_to") == "chat":
+        page = "/chat"
+        conv = _extra.get("conversation")
+        try:
+            if conv:
+                params["conversation"] = str(uuid.UUID(str(conv)))
+        except ValueError:
+            pass
+    return RedirectResponse(f"{settings.frontend_url}{page}?{urlencode(params)}", status_code=302)
 
 
 @router.get("/oauth/{provider}/callback", include_in_schema=False)
@@ -206,7 +230,7 @@ async def oauth_callback(provider: str, request: Request, code: str | None = Que
                          error: str | None = Query(None, max_length=200),
                          principal: Principal | None = Depends(optional_principal),
                          db: Database = Depends(get_db)) -> Response:
-    """Retorno do fornecedor. Termina sempre com um redirecionamento para /conectores."""
+    """Retorno do fornecedor. Termina sempre com um redirecionamento para /conectores (ou /chat, se o pedido veio do chat)."""
     settings = _settings(request)
     if provider not in OAUTH_PROVIDERS:
         return _frontend_redirect(settings, error="unknown_provider")
@@ -216,6 +240,7 @@ async def oauth_callback(provider: str, request: Request, code: str | None = Que
     key = saved.connector
     user_id = uuid.UUID(saved.user_id)
     client = client_info(request)
+    back = saved.extra or {}
     if principal is not None and principal.user_id != user_id:
         return _frontend_redirect(settings, error="oauth_state_invalid", connector=key)
 
@@ -223,7 +248,7 @@ async def oauth_callback(provider: str, request: Request, code: str | None = Que
         async with db.service() as conn:
             await record_audit(conn, "connector.oauth_failed", user_id=user_id, ip=safe_ip(client.ip),
                                user_agent=client.user_agent, details={"connector": key, "reason": code_})
-        return _frontend_redirect(settings, error=code_, connector=key)
+        return _frontend_redirect(settings, _extra=back, error=code_, connector=key)
 
     if error:
         return await fail("access_denied" if error == "access_denied" else "oauth_provider_error")
@@ -249,10 +274,10 @@ async def oauth_callback(provider: str, request: Request, code: str | None = Que
                 metadata={"provider": provider, "scopes": tokens.scope.split(), "has_refresh_token":
                           bool(tokens.refresh_token)})
         except VaultError:
-            return _frontend_redirect(settings, error="connector_error", connector=key)
+            return _frontend_redirect(settings, _extra=back, error="connector_error", connector=key)
         await record_audit(conn, "connector.connected", user_id=user_id, ip=safe_ip(client.ip),
                            user_agent=client.user_agent, details={"connector": key, "account": identity.label})
-    return _frontend_redirect(settings, connected=key)
+    return _frontend_redirect(settings, _extra=back, connected=key)
 
 
 # --- estado e desligar ------------------------------------------------------------------------------

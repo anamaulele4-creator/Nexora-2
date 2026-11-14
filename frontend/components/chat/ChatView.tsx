@@ -12,12 +12,21 @@ import {
   del,
   post,
   postStream,
+  type Approval,
+  type ApprovalDecisionResult,
   type ChatMessage,
   type ChatModels,
+  type ConnectAction,
   type Conversation,
+  type MessageMetadata,
   type SendMessageResult,
+  type ToolActivity,
 } from "@/lib/api";
+import { approvalPreview, chatReturnFeedback, connectPath, mergeToolActivity, messageActions } from "@/lib/chatAgent.ts";
+import { isTrustedAuthorizeUrl } from "@/lib/connectors.ts";
 import { errorText } from "@/lib/errors";
+
+const CONNECTOR_NAMES: Record<string, string> = { github: "GitHub", gmail: "Gmail", google_drive: "Google Drive", shopify: "Shopify" };
 
 type Pending = { content: string };
 
@@ -46,6 +55,9 @@ export function ChatView() {
   const [selected, setSelected] = useState("auto");
   const [streamText, setStreamText] = useState("");
   const [info, setInfo] = useState<string | null>(null);
+  const [approvals, setApprovals] = useState<Record<string, Approval>>({});
+  const [liveTools, setLiveTools] = useState<ToolActivity[]>([]);
+  const [liveMeta, setLiveMeta] = useState<MessageMetadata>({});
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -71,8 +83,10 @@ export function ChatView() {
     setError(null);
     setLoadingThread(true);
     try {
-      const res = await api<{ items: ChatMessage[] }>(`/api/chat/conversations/${id}/messages`);
+      const res = await api<{ items: ChatMessage[]; approvals?: Record<string, Approval> }>(
+        `/api/chat/conversations/${id}/messages`);
       setMessages(res.items);
+      setApprovals((prev) => ({ ...prev, ...(res.approvals ?? {}) }));
     } catch (err) {
       setError(errorText(err, t));
       setMessages([]);
@@ -83,10 +97,23 @@ export function ChatView() {
 
   useEffect(() => {
     if (!me) return;
+    // regresso do OAuth iniciado no chat (/chat?connected=github&conversation=…)
+    const back = chatReturnFeedback(window.location.search);
+    if (back) {
+      if ("connected" in back) {
+        const name = CONNECTOR_NAMES[back.connected] ?? back.connected;
+        setInfo(t("chat.connect.done", { name }));
+        setDraft(t("chat.connect.continue", { name }));
+      } else {
+        setError(t(`conn.callback.${back.error}` as Parameters<typeof t>[0]) || back.error);
+      }
+      window.history.replaceState(null, "", window.location.pathname);
+    }
     void loadConversations().then((items) => {
-      if (items.length > 0) void openConversation(items[0].id);
+      const target = back?.conversation && items.some((c) => c.id === back.conversation) ? back.conversation : items[0]?.id;
+      if (target) void openConversation(target);
     });
-  }, [me, loadConversations, openConversation]);
+  }, [me, loadConversations, openConversation, t]);
 
   useEffect(() => {
     if (!me) return;
@@ -132,6 +159,8 @@ export function ChatView() {
     setInfo(null);
     setPending({ content });
     setStreamText("");
+    setLiveTools([]);
+    setLiveMeta({});
     setDraft("");
     let convId = activeId;
     const controller = new AbortController();
@@ -148,9 +177,19 @@ export function ChatView() {
         const data = JSON.parse(ev.data);
         if (ev.event === "delta") {
           setStreamText((prev) => prev + (data.text as string));
+        } else if (ev.event === "tool") {
+          setLiveTools((prev) => mergeToolActivity(prev, data as ToolActivity));
+        } else if (ev.event === "connect") {
+          const action = data as ConnectAction;
+          setLiveMeta((prev) => ({ ...prev, actions: [...(prev.actions ?? []), action] }));
+        } else if (ev.event === "approval") {
+          const approval = data as Approval;
+          setApprovals((prev) => ({ ...prev, [approval.id]: approval }));
+          setLiveMeta((prev) => ({ ...prev, actions: [...(prev.actions ?? []), { type: "approval", id: approval.id }] }));
         } else if (ev.event === "done") {
           finished = true;
           const res = data as SendMessageResult;
+          setApprovals((prev) => ({ ...prev, ...(res.approvals ?? {}) }));
           setMessages((prev) => [...prev, res.user_message, res.assistant_message]);
           setConversations((prev) => {
             const rest = (prev ?? []).filter((c) => c.id !== res.conversation.id);
@@ -176,7 +215,37 @@ export function ChatView() {
       abortRef.current = null;
       setPending(null);
       setStreamText("");
+      setLiveTools([]);
+      setLiveMeta({});
       inputRef.current?.focus();
+    }
+  }
+
+  async function decide(id: string, decision: "approve" | "reject") {
+    setError(null);
+    try {
+      const res = await post<ApprovalDecisionResult>(`/api/chat/approvals/${id}`, { decision });
+      if (res.approval) setApprovals((prev) => ({ ...prev, [id]: res.approval as Approval }));
+      if (res.message) setMessages((prev) => [...prev, res.message as ChatMessage]);
+    } catch (err) {
+      setError(errorText(err, t));
+      // estado mudou (expirou/decidida noutro separador): recarrega
+      if (activeId) void openConversation(activeId);
+    }
+  }
+
+  async function connectAccount(action: ConnectAction) {
+    setError(null);
+    if (action.method !== "oauth") {
+      window.location.assign(`/conectores#${action.connector}`);
+      return;
+    }
+    try {
+      const r = await post<{ authorize_url: string }>(connectPath(action.connector, activeId));
+      if (!isTrustedAuthorizeUrl(r.authorize_url)) throw new Error("untrusted");
+      window.location.assign(r.authorize_url);
+    } catch (err) {
+      setError(errorText(err, t));
     }
   }
 
@@ -270,11 +339,21 @@ export function ChatView() {
             ) : (
               <ol className="mx-auto max-w-3xl space-y-4">
                 {messages.map((m) => (
-                  <MessageBubble key={m.id} role={m.role} content={m.content} label={m.role === "user" ? t("chat.you") : t("chat.ai")} />
+                  <li key={m.id} className="list-none space-y-2">
+                    <ol>
+                      <MessageBubble role={m.role} content={m.content} label={m.role === "user" ? t("chat.you") : t("chat.ai")} />
+                    </ol>
+                    {m.role === "assistant" && m.metadata && (
+                      <AgentExtras metadata={m.metadata} approvals={approvals} onDecide={decide} onConnect={connectAccount} />
+                    )}
+                  </li>
                 ))}
                 {pending && (
                   <>
                     <MessageBubble role="user" content={pending.content} label={t("chat.you")} />
+                    {liveTools.length > 0 && (
+                      <li className="list-none"><ToolChips tools={liveTools} running /></li>
+                    )}
                     {streamText ? (
                       <MessageBubble role="assistant" content={streamText + " ▍"} label={t("chat.ai")} />
                     ) : (
@@ -286,6 +365,11 @@ export function ChatView() {
                         </span>
                       </div>
                     </li>
+                    )}
+                    {(liveMeta.actions?.length ?? 0) > 0 && (
+                      <li className="list-none">
+                        <AgentExtras metadata={liveMeta} approvals={approvals} onDecide={decide} onConnect={connectAccount} />
+                      </li>
                     )}
                   </>
                 )}
@@ -377,5 +461,105 @@ function MessageBubble({ role, content, label }: { role: "user" | "assistant"; c
         {content}
       </div>
     </li>
+  );
+}
+
+function ToolChips({ tools, running = false }: { tools: ToolActivity[]; running?: boolean }) {
+  const { t } = useUi();
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {tools.map((tool, i) => {
+        const name = tool.label || tool.name;
+        const key = tool.status === "error" ? "chat.tool.error" : running && i === tools.length - 1 ? "chat.tool.running" : "chat.tool.ok";
+        return (
+          <span key={`${tool.name}-${i}`}
+            className={`rounded-full px-2 py-0.5 text-xs ${tool.status === "error"
+              ? "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300"
+              : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300"}`}>
+            {t(key, { name })}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function AgentExtras({
+  metadata, approvals, onDecide, onConnect,
+}: {
+  metadata: MessageMetadata;
+  approvals: Record<string, Approval>;
+  onDecide: (id: string, decision: "approve" | "reject") => Promise<void>;
+  onConnect: (action: ConnectAction) => Promise<void>;
+}) {
+  const { t } = useUi();
+  const { connects, approvalIds } = messageActions(metadata);
+  const tools = metadata.tools ?? [];
+  if (!tools.length && !connects.length && !approvalIds.length) return null;
+  return (
+    <div className="ml-1 max-w-[85%] space-y-2">
+      {tools.length > 0 && <ToolChips tools={tools} />}
+      {connects.map((c) => (
+        <div key={c.connector} className="card flex flex-wrap items-center justify-between gap-3 p-3">
+          <div className="min-w-0 text-sm">
+            <p>{t("chat.connect.needs", { name: c.name })}</p>
+            {c.reason && <p className="text-xs text-slate-500">{c.reason}</p>}
+            {!c.tools_available && <p className="text-xs text-amber-700 dark:text-amber-400">{t("chat.connect.noTools", { name: c.name })}</p>}
+          </div>
+          <button type="button" className="btn-primary shrink-0 px-3 py-1.5" onClick={() => void onConnect(c as ConnectAction)}>
+            {t("chat.connect.button", { name: c.name })}
+          </button>
+        </div>
+      ))}
+      {approvalIds.map((id) => approvals[id] && <ApprovalCard key={id} approval={approvals[id]} onDecide={onDecide} />)}
+    </div>
+  );
+}
+
+function ApprovalCard({ approval, onDecide }: { approval: Approval; onDecide: (id: string, d: "approve" | "reject") => Promise<void> }) {
+  const { t, lang } = useUi();
+  const [busy, setBusy] = useState(false);
+  const fields = approvalPreview(approval.arguments ?? {});
+  const failed = approval.status === "approved" && approval.task_status === "failed";
+  const when = approval.expires_at
+    ? new Intl.DateTimeFormat(lang === "pt" ? "pt-PT" : "en-US", { timeStyle: "short" }).format(new Date(approval.expires_at))
+    : "—";
+  async function click(d: "approve" | "reject") {
+    setBusy(true);
+    try {
+      await onDecide(approval.id, d);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="card space-y-2 border-amber-300 p-3 text-sm dark:border-amber-700">
+      <p className="font-medium">{t("chat.approval.title")}: {approval.summary}</p>
+      {fields.length > 0 && (
+        <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-1 text-xs">
+          {fields.map(([k, v]) => (
+            <div key={k} className="contents">
+              <dt className="text-slate-500">{k}</dt>
+              <dd className="whitespace-pre-wrap break-words">{v}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {approval.status === "pending" ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" className="btn-primary px-3 py-1.5" disabled={busy} onClick={() => void click("approve")}>
+            {t("chat.approval.approve")}
+          </button>
+          <button type="button" className="btn-ghost px-3 py-1.5" disabled={busy} onClick={() => void click("reject")}>
+            {t("chat.approval.reject")}
+          </button>
+          <span className="text-xs text-slate-500">{t("chat.approval.pending", { when })}</span>
+        </div>
+      ) : (
+        <p className={`text-xs ${failed ? "text-red-700 dark:text-red-400" : "text-slate-500"}`}>
+          {failed ? t("chat.approval.failed") : t(`chat.approval.${approval.status}` as "chat.approval.approved")}
+        </p>
+      )}
+    </div>
   );
 }

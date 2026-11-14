@@ -25,11 +25,14 @@ from dataclasses import dataclass, replace
 
 import httpx
 
+from ai_core.agent import MAX_ITERATIONS, Toolbox, run_agent
 from ai_core.keys import decrypt_api_key
 from ai_core.local_engine import LocalEngine, load_engine
 from ai_core.ollama import NOT_CONFIGURED_MESSAGE, OllamaClient, OllamaConfig
 from ai_core.providers import (PAID_PROVIDERS, PROVIDERS, AIReply, ChatMessage, ProviderError, StreamItem,
                                _BaseClient, make_client)
+from ai_core.tool_calling import TOOLS_UNSUPPORTED, GeminiTurns, OllamaNativeTurns, OpenAICompatTurns
+from ai_core.ollama import _headers as ollama_headers
 from core.config import Settings
 from core.db import Database
 from security.crypto import CredentialCipher, DecryptionError
@@ -221,6 +224,64 @@ class AIRouter:
                 return
             except ProviderError as exc:
                 log.warning("fornecedor de IA falhou (stream)",
+                            extra={"fields": {"provider": p.provider, "status": exc.status}})
+                errors.append(exc)
+                if started or not exc.retryable:
+                    break
+        raise AllProvidersFailed(errors)
+
+    # --- agente (ferramentas) ------------------------------------------------------------------
+    def turn_client(self, p: ActiveProvider, stream: bool = True):
+        """Adaptador de function calling para o fornecedor escolhido."""
+        if p.provider == "ollama":
+            assert p.ollama is not None
+            if p.ollama.api_mode == "openai":
+                return OpenAICompatTurns("ollama", f"{p.ollama.base_url}/v1/chat/completions",
+                                         ollama_headers(p.ollama.token), p.model, http=self.http,
+                                         timeout=p.ollama.timeout,
+                                         extra={"temperature": p.ollama.temperature,
+                                                "max_tokens": p.ollama.max_tokens}, stream=stream)
+            return OllamaNativeTurns(p.ollama, p.model, http=self.http, stream=stream)
+        if p.provider == "gemini":
+            return GeminiTurns(p.api_key, p.model, http=self.http, timeout=self.settings.ai_request_timeout_seconds)
+        client = make_client(p.provider, p.api_key, p.model)
+        return OpenAICompatTurns(p.provider, f"{client.base_url}/chat/completions", client._headers(),  # type: ignore[attr-defined]
+                                 p.model, http=self.http, timeout=self.settings.ai_request_timeout_seconds,
+                                 stream=stream)
+
+    async def agent_stream(self, messages: list[ChatMessage], system: str, plain_system: str,
+                           selection: ModelSelection | None, toolbox: Toolbox,
+                           max_iterations: int = MAX_ITERATIONS, stream: bool = True) -> AsyncIterator:
+        """Como ``stream``, mas com ferramentas. Se o modelo não suportar ferramentas, chat simples
+        com ``plain_system`` (prompt honesto: sem ferramentas). Recurso só antes de qualquer saída."""
+        providers = await self.candidates(selection)
+        if not providers:
+            raise NoProviderError()
+        errors: list[ProviderError] = []
+        for p in providers:
+            started = False
+            try:
+                try:
+                    async for item in run_agent(self.turn_client(p, stream), system, messages, toolbox,
+                                                max_iterations):
+                        started = True
+                        yield item
+                    return
+                except ProviderError as exc:
+                    if started or exc.code != TOOLS_UNSUPPORTED:
+                        raise
+                    log.info("modelo sem ferramentas: chat simples", extra={"fields": {"provider": p.provider}})
+                if stream:
+                    async for item in self._client(p).stream(messages, plain_system):
+                        started = True
+                        yield item
+                else:
+                    reply = await self._client(p).generate(messages, plain_system)
+                    yield reply.text
+                    yield reply
+                return
+            except ProviderError as exc:
+                log.warning("fornecedor de IA falhou (agente)",
                             extra={"fields": {"provider": p.provider, "status": exc.status}})
                 errors.append(exc)
                 if started or not exc.retryable:

@@ -18,6 +18,6 @@ test("local engine errors show the server message; not-configured is translated"
   const t = (k: Parameters<typeof translate>[1]) => translate("pt", k);
   assert.equal(errorText({ code: "local_engine_unreachable", message: "Motor local inacessível (ConnectError)" }, t),
     "Motor local inacessível (ConnectError)");
-  assert.equal(errorText({ code: "local_engine_not_configured", message: "x" }, t), "Motor local não configurado.");
-  assert.equal(translate("pt", "admin.local.title"), "Ollama / Modelos");
+  assert.equal(errorText({ code: "local_engine_not_configured", message: "x" }, t), "Motor DÁRIO não configurado.");
+  assert.equal(translate("pt", "admin.local.title"), "Motor DÁRIO / Modelos");
 });

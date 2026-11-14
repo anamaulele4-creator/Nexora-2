@@ -107,13 +107,46 @@ export type ChatMessage = {
   content: string;
   provider: string | null;
   model: string | null;
+  metadata?: MessageMetadata;
   created_at: string;
 };
+
+// O que o agente fez numa resposta (ferramentas, botões "Ligar …", ações à espera de confirmação).
+export type ToolActivity = { name: string; label?: string | null; status: "ok" | "error" };
+export type ConnectAction = {
+  type: "connect";
+  connector: string;
+  name: string;
+  method: "oauth" | "api_key";
+  tools_available: boolean;
+  reason?: string;
+};
+export type ApprovalAction = { type: "approval"; id: string };
+export type MessageMetadata = {
+  tools?: ToolActivity[];
+  actions?: (ConnectAction | ApprovalAction)[];
+  approval_result?: string;
+  ok?: boolean | null;
+};
+export type Approval = {
+  id: string;
+  status: "pending" | "approved" | "rejected" | "expired" | "cancelled";
+  summary: string;
+  tool: string | null;
+  arguments: Record<string, unknown>;
+  risk: string;
+  expires_at: string | null;
+  decided_at: string | null;
+  result: Record<string, unknown> | null;
+  task_status?: string | null;
+};
+export type ApprovalDecisionResult = { approval: Approval | null; message: ChatMessage | null; ok: boolean | null };
 
 export type SendMessageResult = {
   conversation: Conversation;
   user_message: ChatMessage;
   assistant_message: ChatMessage;
+  approvals?: Record<string, Approval>;
 };
 
 // --- Admin -------------------------------------------------------------------------
