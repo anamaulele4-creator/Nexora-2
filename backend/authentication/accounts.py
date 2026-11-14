@@ -11,6 +11,8 @@ import uuid
 
 import asyncpg
 
+from security.audit import record_audit
+
 
 def _slugify(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:50]
@@ -41,3 +43,24 @@ async def create_account(
         uid, display_name, ws_id,
     )
     return uid
+
+
+async def sync_admin_flag(conn: asyncpg.Connection, user_id: uuid.UUID, admin_emails: list[str]) -> bool:
+    """Promove a admin uma conta cujo email (confirmado) está em ADMIN_EMAILS.
+
+    Só promove, nunca despromove (retirar admin é uma operação manual e auditada).
+    Corre em modo serviço. Devolve True se a conta ficou promovida agora.
+    """
+    if not admin_emails:
+        return False
+    promoted = await conn.fetchval(
+        """update public.users set is_admin = true
+           where id = $1 and is_admin = false and email_verified_at is not null
+             and lower(email::text) = any($2::text[])
+           returning true""",
+        user_id, [e.lower() for e in admin_emails],
+    )
+    if promoted:
+        await record_audit(conn, "auth.admin_granted", user_id=user_id, actor_type="system",
+                           details={"reason": "ADMIN_EMAILS"})
+    return bool(promoted)

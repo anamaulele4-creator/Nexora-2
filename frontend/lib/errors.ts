@@ -3,6 +3,8 @@ import type { MessageKey } from "./i18n.ts";
 const KNOWN = new Set([
   "invalid_credentials", "email_not_verified", "email_taken", "weak_password", "account_locked",
   "rate_limited", "invalid_or_expired_token", "validation_error",
+  "forbidden", "ai_unavailable", "ai_provider_error", "message_too_long", "key_required",
+  "encryption_not_configured", "not_found",
 ]);
 
 /** Converte o código de erro da API numa chave de tradução. */
@@ -19,4 +21,14 @@ export function passwordProblems(pw: string): string[] {
   if (pw.toLowerCase() === pw || pw.toUpperCase() === pw) problems.push("mixed_case");
   if (!/[0-9]/.test(pw)) problems.push("digit");
   return problems;
+}
+
+/** Texto de erro para mostrar: traduzido, exceto falhas do fornecedor de IA (a mensagem do servidor é útil). */
+export function errorText(
+  err: unknown,
+  t: (key: MessageKey) => string,
+): string {
+  const e = err as { code?: string; message?: string } | null;
+  if (e?.code === "ai_provider_error" && e.message) return e.message;
+  return t(errorKey(e?.code));
 }

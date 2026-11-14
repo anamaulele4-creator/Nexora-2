@@ -13,6 +13,8 @@ EXPECTED_TABLES = {
     "users", "user_profiles", "workspaces", "connector_definitions", "connected_apps", "connector_permissions",
     "encrypted_credentials", "browser_sessions", "tasks", "task_steps", "action_logs", "approvals", "memories",
     "files", "execution_results", "audit_logs", "usage_metrics", "workflows", "workflow_runs", "notifications",
+    # 0005: fornecedores de IA (tabela de sistema) e chat
+    "ai_providers", "conversations", "messages",
 }
 
 
@@ -29,7 +31,7 @@ async def _as(conn, uid):
     await conn.execute("select set_config('request.jwt.claims', $1, true)", json.dumps({"sub": str(uid)}))
 
 
-async def test_all_twenty_tables_exist_with_rls(db_conn):
+async def test_all_tables_exist_with_rls(db_conn):
     rows = await db_conn.fetch(
         "select tablename, rowsecurity from pg_tables where schemaname = 'public' and tablename <> 'schema_migrations'")
     tables = {r["tablename"]: r["rowsecurity"] for r in rows}
@@ -45,7 +47,8 @@ async def test_every_table_has_user_id_and_utc_timestamps(db_conn):
     for c in cols:
         by_table.setdefault(c["table_name"], {})[c["column_name"]] = c["data_type"]
     for table, columns in by_table.items():
-        owner_col = {"users": "id", "workspaces": "owner_user_id"}.get(table, "user_id")
+        # ai_providers é configuração global (sem dono): regista quem alterou
+        owner_col = {"users": "id", "workspaces": "owner_user_id", "ai_providers": "updated_by"}.get(table, "user_id")
         assert owner_col in columns, f"{table} sem {owner_col}"
         for name, dtype in columns.items():
             if name.endswith("_at"):

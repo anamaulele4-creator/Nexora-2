@@ -18,7 +18,9 @@ if str(_ROOT) not in sys.path:
 from fastapi import FastAPI  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
-from api.routes import auth, connectors, dashboard, health  # noqa: E402
+from ai_core.keys import build_cipher  # noqa: E402
+from ai_core.router import AIRouter  # noqa: E402
+from api.routes import admin, auth, chat, connectors, dashboard, health  # noqa: E402
 from authentication.email import ConsoleEmailSender, EmailSender, MemoryEmailSender, SmtpEmailSender  # noqa: E402
 from authentication.providers.base import AuthProviderBase  # noqa: E402
 from core.config import AuthProvider, EmailBackend, Settings, get_settings  # noqa: E402
@@ -84,6 +86,11 @@ def create_app(settings: Settings | None = None, email_sender: EmailSender | Non
     app.state.email_sender = sender
     app.state.rate_limiter = RateLimiter(redis)
     app.state.auth = build_auth_provider(settings, db, sender)
+    app.state.cipher = build_cipher(
+        settings.credentials_encryption_key.get_secret_value() if settings.credentials_encryption_key else None,
+        settings.credentials_encryption_key_id,
+    )
+    app.state.ai_router = AIRouter(db, settings, app.state.cipher)
 
     # Ordem: o último adicionado é o mais exterior.
     app.add_middleware(OriginCheckMiddleware, allowed_origins=settings.allowed_origins)
@@ -98,6 +105,6 @@ def create_app(settings: Settings | None = None, email_sender: EmailSender | Non
     app.add_middleware(RequestIdMiddleware)
     register_error_handlers(app)
 
-    for r in (health.router, auth.router, dashboard.router, connectors.router):
+    for r in (health.router, auth.router, dashboard.router, connectors.router, admin.router, chat.router):
         app.include_router(r)
     return app

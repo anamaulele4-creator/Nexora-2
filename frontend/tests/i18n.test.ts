@@ -27,4 +27,6 @@ test("unknown error codes fall back to a generic message", () => {
   assert.equal(errorKey("email_taken"), "error.email_taken");
   assert.equal(errorKey("something_else"), "error.generic");
   assert.equal(errorKey("network"), "error.network");
+  assert.equal(errorKey("ai_unavailable"), "error.ai_unavailable");
+  assert.equal(errorKey("forbidden"), "error.forbidden");
 });

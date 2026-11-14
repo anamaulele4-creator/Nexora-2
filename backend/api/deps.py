@@ -67,3 +67,42 @@ async def enforce_rate_limit(request: Request, bucket: str, identity: str) -> No
     if not allowed:
         raise ApiError(429, "rate_limited", "Demasiados pedidos. Tenta mais tarde.",
                        headers={"Retry-After": str(retry_after or 60)})
+
+
+async def require_admin(request: Request, principal: Principal = Depends(current_principal)) -> Principal:
+    """Só administradores. Outros utilizadores autenticados recebem 403.
+
+    Confirma o estado na BD em cada pedido (revogação imediata) e promove na hora uma
+    conta confirmada cujo email está em ADMIN_EMAILS (ex.: sessão aberta antes do deploy).
+    """
+    from authentication.accounts import sync_admin_flag
+
+    db: Database = request.app.state.db
+    settings: Settings = request.app.state.settings
+    async with db.service() as conn:
+        row = await conn.fetchrow(
+            "select is_admin, status from public.users where id = $1", principal.user_id)
+        is_admin = bool(row and row["status"] == "active" and row["is_admin"])
+        if row and row["status"] == "active" and not is_admin:
+            is_admin = await sync_admin_flag(conn, principal.user_id, settings.admin_emails)
+    if not is_admin:
+        raise ApiError(403, "forbidden", "Acesso reservado a administradores")
+    return principal
+
+
+async def enforce_limit(request: Request, bucket: str, identity: str, limit: int, window_seconds: int) -> None:
+    limiter: RateLimiter = request.app.state.rate_limiter
+    allowed, retry_after = await limiter.hit(bucket, identity, limit, window_seconds)
+    if not allowed:
+        raise ApiError(429, "rate_limited", "Demasiados pedidos. Tenta mais tarde.",
+                       headers={"Retry-After": str(retry_after or 60)})
+
+
+def safe_ip(ip: str | None) -> str | None:
+    """IP válido para a coluna inet da auditoria (ou None)."""
+    import ipaddress
+
+    try:
+        return str(ipaddress.ip_address(ip)) if ip else None
+    except ValueError:
+        return None

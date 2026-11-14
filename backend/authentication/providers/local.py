@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 
 import asyncpg
 
-from authentication.accounts import create_account
+from authentication.accounts import create_account, sync_admin_flag
 from authentication.email import EmailSender, password_reset_email, verification_email
 from authentication.passwords import hash_password, password_problems, verify_password
 from authentication.providers.base import (
@@ -119,6 +119,7 @@ class LocalAuthProvider(AuthProviderBase):
                     token = await self._issue_one_time_token(conn, user_id, "email_verification",
                                                              self.settings.email_verification_ttl_seconds)
                 await record_audit(conn, "auth.register", user_id=user_id, ip=_ip(client), user_agent=client.user_agent)
+                await sync_admin_flag(conn, user_id, self.settings.admin_emails)
         except asyncpg.UniqueViolationError as exc:
             raise AuthError(409, "email_taken", "Já existe uma conta com este email") from exc
         if token:
@@ -161,6 +162,7 @@ class LocalAuthProvider(AuthProviderBase):
                 await conn.execute(
                     "update local_auth.credentials set failed_attempts = 0, locked_until = null where user_id = $1", row["id"])
                 await conn.execute("update public.users set last_login_at = now() where id = $1", row["id"])
+                await sync_admin_flag(conn, row["id"], self.settings.admin_emails)
                 pair = await self._create_session(conn, row["id"], row["email"], client)
                 await record_audit(conn, "auth.login", user_id=row["id"], ip=_ip(client), user_agent=client.user_agent)
         if failure is not None:
@@ -217,6 +219,7 @@ class LocalAuthProvider(AuthProviderBase):
             await conn.execute(
                 "update public.users set email_verified_at = coalesce(email_verified_at, now()) where id = $1", user_id)
             await record_audit(conn, "auth.email_verified", user_id=user_id, ip=_ip(client), user_agent=client.user_agent)
+            await sync_admin_flag(conn, user_id, self.settings.admin_emails)
 
     async def resend_verification(self, email: str, client: ClientInfo) -> None:
         async with self.db.service() as conn:

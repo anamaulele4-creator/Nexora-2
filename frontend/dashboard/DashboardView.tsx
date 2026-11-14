@@ -3,10 +3,11 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
+import { AppNav } from "@/components/AppNav";
 import { Alert } from "@/components/AuthShell";
 import { Header } from "@/components/Header";
 import { useUi } from "@/components/Providers";
-import { ApiError, api, post, type DashboardSummary, type Me, type TaskStatus } from "@/lib/api";
+import { ApiError, api, type DashboardSummary, type Me, type TaskStatus } from "@/lib/api";
 import { errorKey } from "@/lib/errors";
 import type { MessageKey } from "@/lib/i18n";
 
@@ -47,14 +48,6 @@ export function DashboardView() {
     void load();
   }, [load]);
 
-  async function logout() {
-    try {
-      await post("/api/auth/logout");
-    } finally {
-      router.replace("/login");
-    }
-  }
-
   const fmt = new Intl.NumberFormat(lang === "pt" ? "pt-PT" : "en-US");
   const fmtDate = (iso: string) =>
     new Intl.DateTimeFormat(lang === "pt" ? "pt-PT" : "en-US", { dateStyle: "medium", timeStyle: "short" }).format(new Date(iso));
@@ -62,9 +55,9 @@ export function DashboardView() {
   return (
     <div className="min-h-screen">
       <Header>
-        <button type="button" className="btn-ghost" onClick={logout}>{t("nav.logout")}</button>
+        <AppNav me={me} />
       </Header>
-      <main className="mx-auto max-w-6xl px-6 py-10">
+      <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-10">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">{t("dash.title")}</h1>

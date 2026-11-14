@@ -5,8 +5,11 @@
 SaaS em que o utilizador dá instruções em linguagem natural e um agente de IA executa tarefas
 através de APIs e de um navegador controlado, sempre com aprovação humana para ações sensíveis.
 
-**Estado: Etapa 1 de 7 — Fundação e autenticação.** Ainda não há agente, navegador nem conectores
-funcionais; isso chega nas etapas 2 a 5. Ver `docs/ARCHITECTURE.md` e `docs/ETAPA-1-RELATORIO.md`.
+**Estado: Etapa 1 de 7 (fundação e autenticação) + Admin e Chat com IA.** Já há um painel de
+administração (`/admin`: estatísticas, utilizadores, chaves Gemini/OpenAI cifradas) e um chat com IA
+para utilizadores com sessão (`/chat`). Ainda não há agente com ferramentas, navegador nem conectores
+funcionais; isso chega nas etapas seguintes. Ver `docs/ARCHITECTURE.md`, `docs/ETAPA-1-RELATORIO.md` e
+**`docs/ADMIN-E-CHAT.md`** (inclui como criar uma chave gratuita do Gemini e colá-la em /admin).
 
 ## Requisitos
 
@@ -44,7 +47,8 @@ npm install
 npm run dev          # http://localhost:3000
 ```
 
-Abre http://localhost:3000 → **Create account**. Com `EMAIL_BACKEND=console`, o link de
+Abre http://localhost:3000 → **Create account**. Para ser admin, regista-te com um email de
+`ADMIN_EMAILS` (por defeito `garenadario3@gmail.com`) e confirma-o; depois `/admin` → cola a chave do Gemini. Com `EMAIL_BACKEND=console`, o link de
 confirmação aparece no terminal da API (procura `verify-email?token=`). Abre-o, entra, e vês o
 Dashboard com os números reais da tua conta (zeros numa conta nova).
 

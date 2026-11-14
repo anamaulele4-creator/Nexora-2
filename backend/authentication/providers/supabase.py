@@ -19,7 +19,7 @@ import uuid
 import httpx
 import jwt
 
-from authentication.accounts import create_account
+from authentication.accounts import create_account, sync_admin_flag
 from authentication.passwords import password_problems
 from authentication.providers.base import (
     AuthError,
@@ -83,6 +83,7 @@ class SupabaseAuthProvider(AuthProviderBase):
             elif verified:
                 await conn.execute(
                     "update public.users set email_verified_at = coalesce(email_verified_at, now()) where id = $1", user_id)
+            await sync_admin_flag(conn, user_id, self.settings.admin_emails)
 
     def _pair(self, data: dict) -> TokenPair:
         return TokenPair(data["access_token"], data["refresh_token"], int(data.get("expires_in", 3600)),

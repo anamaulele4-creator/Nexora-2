@@ -81,3 +81,86 @@ export type DashboardSummary = {
   };
   recent_tasks: { id: string; title: string; status: TaskStatus; mode: string; created_at: string; updated_at: string }[];
 };
+
+export const put = <T = Json>(path: string, body?: unknown) =>
+  api<T>(path, { method: "PUT", body: body === undefined ? undefined : JSON.stringify(body) });
+
+export const del = <T = Json>(path: string) => api<T>(path, { method: "DELETE" });
+
+// --- Chat --------------------------------------------------------------------------
+export type Conversation = {
+  id: string;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+  last_message_at: string | null;
+};
+
+export type ChatMessage = {
+  id: string;
+  conversation_id: string;
+  role: "user" | "assistant";
+  content: string;
+  provider: string | null;
+  model: string | null;
+  created_at: string;
+};
+
+export type SendMessageResult = {
+  conversation: Conversation;
+  user_message: ChatMessage;
+  assistant_message: ChatMessage;
+};
+
+// --- Admin -------------------------------------------------------------------------
+export type AdminStats = {
+  users: number;
+  admins: number;
+  users_last_7d: number;
+  conversations: number;
+  messages: number;
+  messages_last_24h: number;
+  active_providers: number;
+};
+
+export type AdminUser = {
+  id: string;
+  email: string;
+  display_name: string | null;
+  is_admin: boolean;
+  status: string;
+  email_verified: boolean;
+  created_at: string;
+  last_login_at: string | null;
+  conversations: number;
+  messages: number;
+};
+
+export type AdminUsersPage = { items: AdminUser[]; page: number; page_size: number; total: number; pages: number };
+
+export type AiProvider = {
+  provider: "gemini" | "openai";
+  configured: boolean;
+  key_last4: string | null;
+  key_masked: string | null;
+  model: string;
+  default_model: string;
+  enabled: boolean;
+  priority: number;
+  updated_at: string | null;
+  updated_by_email: string | null;
+  last_tested_at: string | null;
+  last_test_ok: boolean | null;
+  last_test_message: string | null;
+};
+
+export type AiProvidersResponse = { items: AiProvider[]; encryption_ready: boolean; order: string[] };
+
+export type ProviderTestResult = {
+  provider: string;
+  model: string;
+  ok: boolean;
+  message: string;
+  reply: string | null;
+  latency_ms: number;
+};

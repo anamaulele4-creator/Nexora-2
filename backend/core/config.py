@@ -96,6 +96,19 @@ class Settings(BaseSettings):
     s3_access_key_id: SecretStr | None = None
     s3_secret_access_key: SecretStr | None = None
 
+    # Administração ----------------------------------------------------------------------
+    # Emails (separados por vírgula) que ficam admin quando a conta tem o email confirmado.
+    admin_emails: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["garenadario3@gmail.com"])
+
+    # IA e chat (chaves dos fornecedores ficam cifradas na BD, definidas em /admin) ----------
+    ai_provider_order: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["gemini", "openai"])
+    gemini_default_model: str = "gemini-flash-latest"
+    openai_default_model: str = "gpt-4o-mini"
+    ai_request_timeout_seconds: float = Field(default=60, ge=5, le=300)
+    chat_rate_limit_per_hour: int = Field(default=60, ge=1, le=10000)
+    chat_history_messages: int = Field(default=20, ge=2, le=100)
+    chat_max_message_chars: int = Field(default=8000, ge=100, le=32000)
+
     # Validadores ----------------------------------------------------------------------
     @field_validator("cors_origins", mode="before")
     @classmethod
@@ -103,6 +116,33 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             return [o.strip().rstrip("/") for o in v.split(",") if o.strip()]
         return v
+
+    @field_validator("admin_emails", mode="before")
+    @classmethod
+    def _split_admins(cls, v: object) -> object:
+        if isinstance(v, str):
+            return [e.strip().lower() for e in v.split(",") if e.strip()]
+        if isinstance(v, list):
+            return [str(e).strip().lower() for e in v if str(e).strip()]
+        return v
+
+    @field_validator("ai_provider_order", mode="before")
+    @classmethod
+    def _split_order(cls, v: object) -> object:
+        items = [p.strip().lower() for p in v.split(",") if p.strip()] if isinstance(v, str) else v
+        if isinstance(items, list):
+            unknown = [p for p in items if p not in ("gemini", "openai")]
+            if unknown:
+                raise ValueError(f"AI_PROVIDER_ORDER só aceita gemini e openai (recebi: {', '.join(unknown)})")
+            seen: list[str] = []
+            for p in items:
+                if p not in seen:
+                    seen.append(p)
+            for p in ("gemini", "openai"):  # os que faltarem ficam no fim
+                if p not in seen:
+                    seen.append(p)
+            return seen
+        return items
 
     @field_validator("frontend_url", "api_base_url")
     @classmethod
@@ -182,6 +222,9 @@ class Settings(BaseSettings):
     def allowed_origins(self) -> list[str]:
         origins = {self.frontend_url, *self.cors_origins}
         return sorted(origins)
+
+    def is_admin_email(self, email: str | None) -> bool:
+        return bool(email) and email.strip().lower() in self.admin_emails  # type: ignore[union-attr]
 
     @property
     def is_production(self) -> bool:

@@ -8,6 +8,7 @@ A base de dados de teste é apagada e recriada no início de cada execução.
 
 from __future__ import annotations
 
+import base64
 import os
 import sys
 from pathlib import Path
@@ -30,6 +31,9 @@ TEST_DB = os.environ.get("TEST_DATABASE_URL", "postgresql://postgres@127.0.0.1:5
 TEST_REDIS = os.environ.get("TEST_REDIS_URL", "redis://127.0.0.1:6379/15")
 FRONTEND = "http://localhost:3000"
 JWT_SECRET = "test-only-jwt-secret-0123456789abcdef0123456789"
+# chave de cifra só para testes (gerada a cada execução, nunca uma chave real)
+TEST_ENCRYPTION_KEY = base64.b64encode(os.urandom(32)).decode()
+ADMIN_EMAIL = f"boss-{os.getpid()}@example.com"
 
 
 def make_settings(**overrides):
@@ -74,7 +78,10 @@ async def app(migrated_db):
     from api.main import create_app
     from authentication.email import MemoryEmailSender
 
-    application = create_app(make_settings(), email_sender=MemoryEmailSender())
+    application = create_app(
+        make_settings(credentials_encryption_key=TEST_ENCRYPTION_KEY, admin_emails=[ADMIN_EMAIL]),
+        email_sender=MemoryEmailSender(),
+    )
     async with LifespanManager(application):
         yield application
 
@@ -85,6 +92,9 @@ async def _clean_state(request):
         app = request.getfixturevalue("app")
         app.state.email_sender.outbox.clear()
         app.state.settings.auth_rate_limit_per_15min = 1000
+        app.state.settings.admin_emails = [ADMIN_EMAIL]
+        app.state.settings.chat_rate_limit_per_hour = 1000
+        app.state.settings.chat_history_messages = 20
     r = Redis.from_url(TEST_REDIS)
     try:
         await r.flushdb()
@@ -99,6 +109,22 @@ async def client(app):
     async with AsyncClient(transport=transport, base_url="http://testserver",
                            headers={"Origin": FRONTEND}) as c:
         yield c
+
+
+@pytest.fixture
+async def make_client(app):
+    """Fábrica de clientes HTTP independentes (cada um com os seus cookies)."""
+    clients: list[AsyncClient] = []
+
+    async def _make() -> AsyncClient:
+        c = AsyncClient(transport=ASGITransport(app=app, client=("203.0.113.11", 51001)),
+                        base_url="http://testserver", headers={"Origin": FRONTEND})
+        clients.append(c)
+        return c
+
+    yield _make
+    for c in clients:
+        await c.aclose()
 
 
 @pytest.fixture

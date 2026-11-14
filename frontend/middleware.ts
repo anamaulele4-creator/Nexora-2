@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-// Proteção de rota no edge: sem cookie de sessão, nem tenta abrir o dashboard.
+// Proteção de rota no edge: sem cookie de sessão, nem tenta abrir o dashboard, o chat ou a administração.
 // A validação real do token é sempre feita pela API.
 export function middleware(request: NextRequest) {
   const hasSession = request.cookies.has("ca_access") || request.cookies.has("ca_session");
@@ -13,4 +13,4 @@ export function middleware(request: NextRequest) {
   return NextResponse.next();
 }
 
-export const config = { matcher: ["/dashboard/:path*"] };
+export const config = { matcher: ["/dashboard/:path*", "/chat/:path*", "/admin/:path*"] };

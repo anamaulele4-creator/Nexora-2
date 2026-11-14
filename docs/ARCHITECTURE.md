@@ -145,6 +145,10 @@ workspaces(id, owner_user_id)` — ninguém escreve num workspace que não é se
 código. Datas sempre `timestamptz` e ligações em UTC. `updated_at` automático. Esquema `local_auth`
 (credenciais, sessões, tokens de uso único) inacessível ao papel `authenticated`.
 
+Migração 0005 (Admin e Chat) acrescenta `ai_providers` (configuração global, chave só cifrada, sem
+acesso para `authenticated`; é a exceção à regra do `user_id` — guarda `updated_by`), `conversations`
+e `messages` (RLS própria, FK composta mensagem → conversa do mesmo utilizador).
+
 Modelo multi-membro de workspaces (equipas) não faz parte das 20 tabelas; quando for preciso
 acrescenta-se `workspace_members` e as políticas passam a verificar pertença.
 
@@ -189,6 +193,8 @@ timeouts e idempotência (`tasks.idempotency_key` único por utilizador).
 | POST | /api/auth/reset-password | revoga sessões |
 | GET | /api/dashboard/summary | números reais sob RLS |
 | GET | /api/connectors | catálogo (todos planned) |
+| GET/PUT/POST | /api/admin/* | stats, users, providers (+ test) — só admins (ver `docs/ADMIN-E-CHAT.md`) |
+| GET/POST/DELETE | /api/chat/* | conversas e mensagens do utilizador; resposta da IA (Gemini/OpenAI) |
 
 Erros sempre em `{"error": {"code", "message", "request_id"}}`. `/docs` (OpenAPI) só fora de produção.
 Restantes endpoints do documento técnico (tasks, connections, browser, approvals, audit, usage,
