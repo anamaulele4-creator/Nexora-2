@@ -104,7 +104,7 @@ class Settings(BaseSettings):
     ai_provider_order: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["gemini", "groq", "openrouter", "openai"])
     gemini_default_model: str = "gemini-flash-latest"
     openai_default_model: str = "gpt-4o-mini"
-    groq_default_model: str = "llama-3.3-70b-versatile"
+    groq_default_model: str = "openai/gpt-oss-120b"
     openrouter_default_model: str = "openrouter/free"
     ai_request_timeout_seconds: float = Field(default=60, ge=5, le=300)
     chat_rate_limit_per_hour: int = Field(default=60, ge=1, le=10000)
