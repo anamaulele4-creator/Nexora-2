@@ -142,7 +142,20 @@ curl -i https://dario.teu-dominio.com:11434   # tem de falhar: o Ollama não est
 * Tokens só no `deploy/.env` do servidor e no /admin (cifrados com `CREDENTIALS_ENCRYPTION_KEY`). Nunca no Git.
 * Roda os tokens: muda no `.env`, `docker compose up -d dario-api`, atualiza no /admin.
 
-## 6. Próximas fases
+## 6. Testado de ponta a ponta (2026-11-14)
+
+Com Ollama 0.40.16 real, `qwen3:0.6b` e `nomic-embed-text` (sandbox ARM, só CPU) e PostgreSQL 17 + pgvector 0.8.0:
+
+* `/ready`, tokens (401 sem token, 403 a descarregar modelos com o token de utilizador).
+* `dario:auto` → modelo escolhido e devolvido em `x-dario-model`.
+* **O adaptador real do CONNECTOR AI** (`OllamaManager` e `OllamaClient`) contra a DÁRIO API: versão, lista de modelos
+  (com `dario:auto`), `show`, `ps`, resposta e streaming nos modos Nativo e OpenAI, token errado → erro claro.
+* Memória: guardar, pesquisar (cada pergunta encontrou a memória certa em 1.º lugar) e apagar.
+
+Corrigido nestes testes: corpo JSON das rotas de memória, prefixos de pesquisa do `nomic-embed-text`,
+`/ready` com Ollama inacessível, e o cliente interno a ignorar proxies do sistema.
+
+## 7. Próximas fases
 
 | Fase | Conteúdo |
 |---|---|
