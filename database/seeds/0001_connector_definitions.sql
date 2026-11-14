@@ -8,7 +8,7 @@ values
   ('google_drive',    'Google Drive',      'List, read and upload files.',                                       'storage', 'oauth2', 'planned', 4,
      '{https://www.googleapis.com/auth/drive.file}'),
   ('github',          'GitHub',            'Repositories, issues and pull requests.',                             'developer', 'oauth2', 'planned', 4, '{repo,read:user}'),
-  ('shopify',         'Shopify',           'Products, orders and inventory of a store.',                         'commerce', 'oauth2', 'planned', 4,
+  ('shopify',         'Shopify',           'Products, orders and inventory of a store (shop domain + Admin API token).', 'commerce', 'api_key', 'planned', 4,
      '{read_products,read_orders}'),
   ('custom_api',      'Custom API',        'Any HTTP API with the user''s own key.',                             'developer', 'api_key', 'planned', 4, '{}')
 on conflict (key) do update
