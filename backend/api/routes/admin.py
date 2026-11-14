@@ -19,6 +19,8 @@ from ai_core.providers import PROVIDERS, ChatMessage, ProviderError, make_client
 from ai_core.router import AIRouter
 from api.deps import client_info, enforce_limit, get_db, require_admin, safe_ip
 from api.schemas import _In
+from connector_hub import oauth
+from connector_hub.registry import CONNECTION_SPECS
 from authentication.tokens import Principal
 from core.config import Settings
 from core.db import Database
@@ -251,3 +253,42 @@ async def test_provider(provider: str, request: Request, principal: Principal = 
                            details={"provider": provider, "model": row["model"], "ok": ok, "latency_ms": latency_ms})
     return {"provider": provider, "model": row["model"], "ok": ok, "message": message, "reply": reply_text,
             "latency_ms": latency_ms}
+
+
+# --- conectores -----------------------------------------------------------------------------------------
+@router.get("/connectors")
+async def connectors_overview(request: Request, _: Principal = Depends(require_admin),
+                              db: Database = Depends(get_db)) -> dict:
+    """Estado de cada fornecedor de ligação: OAuth configurado (sem mostrar segredos) e contas ligadas."""
+    settings = _settings(request)
+    async with db.service() as conn:
+        rows = {r["key"]: dict(r) for r in await conn.fetch(
+            """select d.key, d.name, d.status,
+                      (select count(*)::int from public.connected_apps a
+                        where a.connector_definition_id = d.id and a.status = 'connected') as connected,
+                      (select count(*)::int from public.connected_apps a
+                        where a.connector_definition_id = d.id and a.status in ('expired', 'error')) as failing
+               from public.connector_definitions d""")}
+    items = []
+    for key, spec in CONNECTION_SPECS.items():
+        row = rows.get(key) or {"name": key, "status": "missing", "connected": 0, "failing": 0}
+        provider = spec.oauth_provider
+        env = oauth.ENV_VARS.get(provider or "", ())
+        items.append({
+            "key": key, "name": row["name"], "catalog_status": row["status"], "method": spec.method,
+            "oauth_provider": provider,
+            "oauth_configured": oauth.oauth_configured(settings, provider) if provider else None,
+            "env_vars": [{"name": name, "set": _env_set(settings, name)} for name in env],
+            "redirect_uri": oauth.redirect_uri(settings, provider) if provider else None,
+            "connected_accounts": row["connected"], "failing_accounts": row["failing"],
+        })
+    return {"items": items, "encryption_ready": request.app.state.cipher is not None,
+            "redirect_base": settings.oauth_redirect_base}
+
+
+def _env_set(settings: Settings, env_name: str) -> bool:
+    value = getattr(settings, env_name.lower(), None)
+    if value is None:
+        return False
+    raw = value.get_secret_value() if hasattr(value, "get_secret_value") else str(value)
+    return bool(raw.strip())
