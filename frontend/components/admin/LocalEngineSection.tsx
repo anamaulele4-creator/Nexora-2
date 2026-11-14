@@ -75,6 +75,9 @@ export function LocalEngineSection({ fmtDate }: { fmtDate: (iso: string) => stri
       {engine && engine.encryption_ready === false && (
         <div className="mt-4"><Alert tone="error">{t("admin.providers.noEncryption")}</Alert></div>
       )}
+      {engine && !engine.configured && (
+        <div className="mt-4"><Alert tone="info">{t("admin.local.notConfigured")}</Alert></div>
+      )}
       {engine && engine.warning && (
         <div className="mt-4"><Alert tone="info">{engine.warning}</Alert></div>
       )}
@@ -173,7 +176,7 @@ function EngineForm({
     <form onSubmit={save} className="card space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h3 className="font-semibold">Ollama</h3>
+          <h3 className="font-semibold">DÁRIO</h3>
           <p className="text-xs text-slate-500">{t("admin.provider.priority", { n: 1 })}</p>
         </div>
         <div className="flex flex-wrap gap-2 text-xs">
