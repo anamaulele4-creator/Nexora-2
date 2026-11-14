@@ -1,0 +1,81 @@
+# DÁRIO · stack do servidor de IA (VPS)
+#   GPU NVIDIA:  docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#   Só CPU:      docker compose up -d --build
+# Só o Caddy (80/443) fica exposto. Ollama, PostgreSQL e Redis vivem na rede interna "dario".
+name: dario
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      DARIO_DOMAIN: ${DARIO_DOMAIN:?define DARIO_DOMAIN no .env}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [dario-api]
+    networks: [edge, dario]
+
+  dario-api:
+    build: ../api
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      DARIO_OLLAMA_URL: http://ollama:11434
+      DARIO_DATABASE_URL: postgresql://dario:${POSTGRES_PASSWORD:?define POSTGRES_PASSWORD}@postgres:5432/dario
+    volumes:
+      - ollama_models:/models:ro          # só para o diagnóstico de espaço em disco
+    depends_on:
+      ollama: { condition: service_started }
+      postgres: { condition: service_healthy }
+    networks: [dario]
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434         # dentro da rede interna; sem "ports:" = nunca exposto
+      OLLAMA_MODELS: /models
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-2}
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-2}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-8192}
+    volumes: [ollama_models:/models]
+    networks: [dario, egress]             # egress: só para descarregar modelos (sem portas publicadas)
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dario
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: dario
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dario -d dario"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [dario]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redisdata:/data]
+    networks: [dario]
+
+networks:
+  edge: {}                     # Caddy ⇄ Internet
+  egress: {}                   # saída do Ollama para ollama.com (descarregar modelos)
+  dario: { internal: true }    # rede privada: API, Ollama, PostgreSQL, Redis — sem acesso à Internet
+
+volumes:
+  caddy_data:
+  caddy_config:
+  ollama_models:
+  pgdata:
+  redisdata:

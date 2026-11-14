@@ -1,0 +1,25 @@
+name: DÁRIO API
+
+on:
+  push:
+    paths: ["dario/**", ".github/workflows/dario-api.yml"]
+  pull_request:
+    paths: ["dario/**", ".github/workflows/dario-api.yml"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: dario/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+      - name: Scripts (sintaxe)
+        working-directory: dario/scripts
+        run: for f in *.sh; do bash -n "$f"; done
