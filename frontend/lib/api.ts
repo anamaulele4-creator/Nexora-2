@@ -313,3 +313,87 @@ export type ApiKey = {
   tokens_30d: number;
   token?: string;
 };
+
+export const patch = <T = Json>(path: string, body?: unknown) =>
+  api<T>(path, { method: "PATCH", body: body === undefined ? undefined : JSON.stringify(body) });
+
+// --- Definições -----------------------------------------------------------------------------
+export type Profile = {
+  email: string;
+  email_verified: boolean;
+  display_name: string | null;
+  avatar_url: string | null;
+  created_at: string;
+};
+
+export type AiProviderChoice = "auto" | "ollama" | "gemini" | "groq" | "openrouter" | "openai";
+
+export type AiPreference = {
+  provider: AiProviderChoice;
+  model: string | null;
+  fallback_provider: Exclude<AiProviderChoice, "auto"> | null;
+  saved: boolean;
+  allow_paid_providers: boolean;
+  options: { provider: AiProviderChoice; label: string; paid: boolean; allowed: boolean; available: boolean }[];
+};
+
+export type UserSession = {
+  id: string;
+  created_at: string;
+  last_used_at: string;
+  expires_at: string;
+  ip: string | null;
+  user_agent: string | null;
+  current: boolean;
+};
+
+// --- Conectores --------------------------------------------------------------------------------
+export type ConnectorConnection = {
+  status: "connected" | "expired" | "error" | "revoked" | "pending";
+  account_label: string | null;
+  connected_at: string | null;
+  last_health_check_at: string | null;
+  last_health_status: "healthy" | "degraded" | "unhealthy" | null;
+  revoked_at: string | null;
+};
+
+export type ConnectorItem = {
+  key: string;
+  name: string;
+  description: string;
+  category: string;
+  auth_type: string;
+  status: string;
+  planned_stage: number | null;
+  version: string;
+  connectable: boolean;
+  method: "oauth" | "api_key" | null;
+  oauth_provider: "github" | "google" | null;
+  oauth_configured: boolean | null;
+  connection: ConnectorConnection | null;
+  check?: { ok: boolean; code: string; message: string } | null;
+};
+
+export type ConnectorsResponse = { items: ConnectorItem[]; encryption_ready: boolean };
+
+export type AdminConnector = {
+  key: string;
+  name: string;
+  catalog_status: string;
+  method: "oauth" | "api_key";
+  oauth_provider: "github" | "google" | null;
+  oauth_configured: boolean | null;
+  env_vars: { name: string; set: boolean }[];
+  redirect_uri: string | null;
+  connected_accounts: number;
+  failing_accounts: number;
+};
+
+export type AdminConnectorsResponse = { items: AdminConnector[]; encryption_ready: boolean; redirect_base: string };
+
+export type AiPolicy = {
+  allow_paid_providers: boolean;
+  paid_providers: string[];
+  updated_at: string | null;
+  updated_by_email: string | null;
+};

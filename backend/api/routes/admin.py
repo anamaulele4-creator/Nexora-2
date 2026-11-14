@@ -15,10 +15,12 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import Field, field_validator
 
 from ai_core.keys import decrypt_api_key, encrypt_api_key, last4, mask
-from ai_core.providers import PROVIDERS, ChatMessage, ProviderError, make_client
+from ai_core.providers import PAID_PROVIDERS, PROVIDERS, ChatMessage, ProviderError, make_client
 from ai_core.router import AIRouter
 from api.deps import client_info, enforce_limit, get_db, require_admin, safe_ip
 from api.schemas import _In
+from connector_hub import oauth
+from connector_hub.registry import CONNECTION_SPECS
 from authentication.tokens import Principal
 from core.config import Settings
 from core.db import Database
@@ -251,3 +253,79 @@ async def test_provider(provider: str, request: Request, principal: Principal = 
                            details={"provider": provider, "model": row["model"], "ok": ok, "latency_ms": latency_ms})
     return {"provider": provider, "model": row["model"], "ok": ok, "message": message, "reply": reply_text,
             "latency_ms": latency_ms}
+
+
+# --- política de IA para os utilizadores --------------------------------------------------------------
+class AIPolicyIn(_In):
+    allow_paid_providers: bool
+
+
+async def _policy_out(conn) -> dict:
+    row = await conn.fetchrow(
+        """select p.allow_paid_providers, p.updated_at, u.email::text as updated_by_email
+           from public.ai_policy p left join public.users u on u.id = p.updated_by where p.id = 1""")
+    return {"allow_paid_providers": bool(row and row["allow_paid_providers"]),
+            "paid_providers": sorted(PAID_PROVIDERS),
+            "updated_at": row["updated_at"].isoformat() if row else None,
+            "updated_by_email": row["updated_by_email"] if row else None}
+
+
+@router.get("/ai-policy")
+async def get_ai_policy(_: Principal = Depends(require_admin), db: Database = Depends(get_db)) -> dict:
+    async with db.service() as conn:
+        return await _policy_out(conn)
+
+
+@router.put("/ai-policy")
+async def set_ai_policy(body: AIPolicyIn, request: Request, principal: Principal = Depends(require_admin),
+                        db: Database = Depends(get_db)) -> dict:
+    """Autoriza (ou não) que os utilizadores escolham fornecedores pagos nas Definições."""
+    client = client_info(request)
+    async with db.service() as conn:
+        await conn.execute(
+            """insert into public.ai_policy (id, allow_paid_providers, updated_by) values (1, $1, $2)
+               on conflict (id) do update set allow_paid_providers = excluded.allow_paid_providers,
+                 updated_by = excluded.updated_by""",
+            body.allow_paid_providers, principal.user_id)
+        await record_audit(conn, "admin.ai_policy_updated", user_id=principal.user_id, ip=safe_ip(client.ip),
+                           user_agent=client.user_agent, details={"allow_paid_providers": body.allow_paid_providers})
+        return await _policy_out(conn)
+
+
+# --- conectores -----------------------------------------------------------------------------------------
+@router.get("/connectors")
+async def connectors_overview(request: Request, _: Principal = Depends(require_admin),
+                              db: Database = Depends(get_db)) -> dict:
+    """Estado de cada fornecedor de ligação: OAuth configurado (sem mostrar segredos) e contas ligadas."""
+    settings = _settings(request)
+    async with db.service() as conn:
+        rows = {r["key"]: dict(r) for r in await conn.fetch(
+            """select d.key, d.name, d.status,
+                      (select count(*)::int from public.connected_apps a
+                        where a.connector_definition_id = d.id and a.status = 'connected') as connected,
+                      (select count(*)::int from public.connected_apps a
+                        where a.connector_definition_id = d.id and a.status in ('expired', 'error')) as failing
+               from public.connector_definitions d""")}
+    items = []
+    for key, spec in CONNECTION_SPECS.items():
+        row = rows.get(key) or {"name": key, "status": "missing", "connected": 0, "failing": 0}
+        provider = spec.oauth_provider
+        env = oauth.ENV_VARS.get(provider or "", ())
+        items.append({
+            "key": key, "name": row["name"], "catalog_status": row["status"], "method": spec.method,
+            "oauth_provider": provider,
+            "oauth_configured": oauth.oauth_configured(settings, provider) if provider else None,
+            "env_vars": [{"name": name, "set": _env_set(settings, name)} for name in env],
+            "redirect_uri": oauth.redirect_uri(settings, provider) if provider else None,
+            "connected_accounts": row["connected"], "failing_accounts": row["failing"],
+        })
+    return {"items": items, "encryption_ready": request.app.state.cipher is not None,
+            "redirect_base": settings.oauth_redirect_base}
+
+
+def _env_set(settings: Settings, env_name: str) -> bool:
+    value = getattr(settings, env_name.lower(), None)
+    if value is None:
+        return False
+    raw = value.get_secret_value() if hasattr(value, "get_secret_value") else str(value)
+    return bool(raw.strip())

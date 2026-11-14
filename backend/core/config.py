@@ -119,6 +119,18 @@ class Settings(BaseSettings):
     # API pública v1 (tokens emitidos em /admin) --------------------------------------------
     api_v1_rate_limit_per_minute: int = Field(default=60, ge=1, le=100000)
 
+    # Conectores (GitHub, Gmail, Google Drive, Shopify) ---------------------------------------
+    # Credenciais das apps OAuth. Sem elas o botão "Ligar" fica desativado (ver docs/CONECTORES.md).
+    github_oauth_client_id: str | None = None
+    github_oauth_client_secret: SecretStr | None = None
+    google_oauth_client_id: str | None = None
+    google_oauth_client_secret: SecretStr | None = None
+    # Base pública dos URLs de retorno OAuth (/api/connectors/oauth/<fornecedor>/callback).
+    # Vazio = FRONTEND_URL (o Next reencaminha /api/* para a API).
+    oauth_redirect_base_url: str | None = None
+    shopify_api_version: str = Field(default="2026-07", pattern=r"^\d{4}-\d{2}$")
+    connector_http_timeout_seconds: float = Field(default=20, ge=2, le=120)
+
     # Validadores ----------------------------------------------------------------------
     @field_validator("cors_origins", mode="before")
     @classmethod
@@ -154,6 +166,26 @@ class Settings(BaseSettings):
                     seen.append(p)
             return seen
         return items
+
+    @field_validator("oauth_redirect_base_url")
+    @classmethod
+    def _oauth_base(cls, v: str | None) -> str | None:
+        if v is None or not v.strip():
+            return None
+        v = v.strip()
+        if not v.startswith(("http://", "https://")):
+            raise ValueError("OAUTH_REDIRECT_BASE_URL tem de começar por http:// ou https://")
+        return v.rstrip("/")
+
+    @field_validator("github_oauth_client_id", "google_oauth_client_id")
+    @classmethod
+    def _blank_none(cls, v: str | None) -> str | None:
+        return v.strip() if v and v.strip() else None
+
+    @field_validator("github_oauth_client_secret", "google_oauth_client_secret")
+    @classmethod
+    def _blank_secret(cls, v: SecretStr | None) -> SecretStr | None:
+        return v if v is not None and v.get_secret_value().strip() else None
 
     @field_validator("frontend_url", "api_base_url")
     @classmethod
@@ -236,6 +268,10 @@ class Settings(BaseSettings):
 
     def is_admin_email(self, email: str | None) -> bool:
         return bool(email) and email.strip().lower() in self.admin_emails  # type: ignore[union-attr]
+
+    @property
+    def oauth_redirect_base(self) -> str:
+        return self.oauth_redirect_base_url or self.frontend_url
 
     @property
     def is_production(self) -> bool:

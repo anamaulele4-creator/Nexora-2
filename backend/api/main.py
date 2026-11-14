@@ -20,7 +20,9 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
 from ai_core.keys import build_cipher  # noqa: E402
 from ai_core.router import AIRouter  # noqa: E402
-from api.routes import admin, api_keys, auth, chat, connectors, dashboard, health, local_engine, public_v1  # noqa: E402
+from api.routes import (  # noqa: E402
+    admin, api_keys, auth, chat, connectors, dashboard, health, local_engine, public_v1, settings as settings_routes,
+)
 from authentication.email import ConsoleEmailSender, EmailSender, MemoryEmailSender, SmtpEmailSender  # noqa: E402
 from authentication.providers.base import AuthProviderBase  # noqa: E402
 from core.config import AuthProvider, EmailBackend, Settings, get_settings  # noqa: E402
@@ -106,6 +108,6 @@ def create_app(settings: Settings | None = None, email_sender: EmailSender | Non
     register_error_handlers(app)
 
     for r in (health.router, auth.router, dashboard.router, connectors.router, admin.router, chat.router,
-              local_engine.router, api_keys.router, public_v1.router):
+              local_engine.router, api_keys.router, public_v1.router, settings_routes.router):
         app.include_router(r)
     return app
