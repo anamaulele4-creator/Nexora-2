@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import Field, field_validator
 
 from ai_core.keys import decrypt_api_key, encrypt_api_key, last4, mask
-from ai_core.providers import PROVIDERS, ChatMessage, ProviderError, make_client
+from ai_core.providers import PAID_PROVIDERS, PROVIDERS, ChatMessage, ProviderError, make_client
 from ai_core.router import AIRouter
 from api.deps import client_info, enforce_limit, get_db, require_admin, safe_ip
 from api.schemas import _In
@@ -253,6 +253,43 @@ async def test_provider(provider: str, request: Request, principal: Principal = 
                            details={"provider": provider, "model": row["model"], "ok": ok, "latency_ms": latency_ms})
     return {"provider": provider, "model": row["model"], "ok": ok, "message": message, "reply": reply_text,
             "latency_ms": latency_ms}
+
+
+# --- política de IA para os utilizadores --------------------------------------------------------------
+class AIPolicyIn(_In):
+    allow_paid_providers: bool
+
+
+async def _policy_out(conn) -> dict:
+    row = await conn.fetchrow(
+        """select p.allow_paid_providers, p.updated_at, u.email::text as updated_by_email
+           from public.ai_policy p left join public.users u on u.id = p.updated_by where p.id = 1""")
+    return {"allow_paid_providers": bool(row and row["allow_paid_providers"]),
+            "paid_providers": sorted(PAID_PROVIDERS),
+            "updated_at": row["updated_at"].isoformat() if row else None,
+            "updated_by_email": row["updated_by_email"] if row else None}
+
+
+@router.get("/ai-policy")
+async def get_ai_policy(_: Principal = Depends(require_admin), db: Database = Depends(get_db)) -> dict:
+    async with db.service() as conn:
+        return await _policy_out(conn)
+
+
+@router.put("/ai-policy")
+async def set_ai_policy(body: AIPolicyIn, request: Request, principal: Principal = Depends(require_admin),
+                        db: Database = Depends(get_db)) -> dict:
+    """Autoriza (ou não) que os utilizadores escolham fornecedores pagos nas Definições."""
+    client = client_info(request)
+    async with db.service() as conn:
+        await conn.execute(
+            """insert into public.ai_policy (id, allow_paid_providers, updated_by) values (1, $1, $2)
+               on conflict (id) do update set allow_paid_providers = excluded.allow_paid_providers,
+                 updated_by = excluded.updated_by""",
+            body.allow_paid_providers, principal.user_id)
+        await record_audit(conn, "admin.ai_policy_updated", user_id=principal.user_id, ip=safe_ip(client.ip),
+                           user_agent=client.user_agent, details={"allow_paid_providers": body.allow_paid_providers})
+        return await _policy_out(conn)
 
 
 # --- conectores -----------------------------------------------------------------------------------------

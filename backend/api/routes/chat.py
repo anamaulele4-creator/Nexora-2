@@ -19,6 +19,7 @@ from pydantic import Field, field_validator
 
 from ai_core.ollama import NOT_CONFIGURED_MESSAGE, OllamaManager
 from ai_core.providers import PROVIDERS, AIReply, ChatMessage, ProviderError
+from ai_core.preferences import allow_paid_providers, load_preference, selection_for
 from ai_core.router import AIRouter, AllProvidersFailed, ModelSelection, NoProviderError
 from api.deps import client_info, current_principal, enforce_limit, get_db, safe_ip
 from api.sse import HEARTBEAT, SSE_HEADERS, SSE_PING, sse_event, with_heartbeat
@@ -235,8 +236,17 @@ async def _persist(db: Database, principal: Principal, conversation_id: uuid.UUI
             "assistant_message": _msg_out(bot_row)}
 
 
-def _selection(body: MessageIn) -> ModelSelection:
-    return ModelSelection(provider=body.provider, model=body.model if body.provider else None)
+async def _selection(body: MessageIn, db: Database, principal: Principal) -> ModelSelection:
+    """Escolha explícita do pedido; sem ela, a preferência do utilizador (Definições)."""
+    if body.provider:
+        return ModelSelection(provider=body.provider, model=body.model)
+    async with db.as_user(principal.user_id) as conn:
+        pref = await load_preference(conn, principal.user_id)
+    allow_paid = False
+    if pref.saved:
+        async with db.service() as conn:  # ai_policy é tabela de sistema
+            allow_paid = await allow_paid_providers(conn)
+    return selection_for(pref, allow_paid) or ModelSelection()
 
 
 @router.post("/conversations/{conversation_id}/messages", status_code=status.HTTP_201_CREATED)
@@ -245,7 +255,7 @@ async def send_message(conversation_id: uuid.UUID, body: MessageIn, request: Req
     conv, messages = await _prepare(conversation_id, body, request, principal, db)
     ai: AIRouter = request.app.state.ai_router
     try:  # IA fora de transações
-        reply = await ai.generate(messages, SYSTEM_PROMPT, _selection(body))
+        reply = await ai.generate(messages, SYSTEM_PROMPT, await _selection(body, db, principal))
     except (NoProviderError, AllProvidersFailed) as exc:
         raise ai_error(exc) from exc
     return await _persist(db, principal, conversation_id, conv, body.content, reply)
@@ -263,7 +273,7 @@ async def stream_message(conversation_id: uuid.UUID, body: MessageIn, request: R
     """
     conv, messages = await _prepare(conversation_id, body, request, principal, db)
     ai: AIRouter = request.app.state.ai_router
-    selection = _selection(body)
+    selection = await _selection(body, db, principal)
     try:  # erros de configuração respondem já em JSON, antes de abrir o stream
         if not await ai.candidates(selection):
             raise NoProviderError()

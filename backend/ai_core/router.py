@@ -67,6 +67,9 @@ class ModelSelection:
     # Ajustes por pedido (API v1). Só o motor local os aplica; a nuvem usa os seus defeitos.
     temperature: float | None = None
     max_tokens: int | None = None
+    # Preferência do utilizador (Definições): fornecedores a tentar se o escolhido falhar
+    # ou não estiver disponível. Só se aplica quando ``fallback`` não está vazio.
+    fallback: tuple[str, ...] = ()
 
     def apply(self, config: OllamaConfig) -> OllamaConfig:
         changes: dict = {}
@@ -127,6 +130,8 @@ class AIRouter:
 
     async def candidates(self, selection: ModelSelection | None = None) -> list[ActiveProvider]:
         sel = selection or ModelSelection()
+        if sel.fallback:
+            return await self._with_fallback(sel)
         if sel.provider == "ollama":
             engine = await self.local_engine()
             if engine is None or not engine.enabled or engine.config is None:
@@ -155,6 +160,26 @@ class AIRouter:
             allowed = [p for p in cloud if engine.allow_paid_fallback or p.provider not in PAID_PROVIDERS]
             return [local, *allowed]
         return cloud
+
+    async def _with_fallback(self, sel: ModelSelection) -> list[ActiveProvider]:
+        """Escolhido primeiro; depois cada recurso disponível (sem repetir fornecedores)."""
+        out: list[ActiveProvider] = []
+        first_error: NoProviderError | None = None
+        try:
+            out.extend(await self.candidates(replace(sel, fallback=())))
+        except NoProviderError as exc:
+            first_error = exc
+        for provider in sel.fallback:
+            if provider == sel.provider or any(p.provider == provider for p in out):
+                continue
+            try:
+                extra = await self.candidates(ModelSelection(provider=provider))
+            except NoProviderError:
+                continue
+            out.extend(p for p in extra if not any(o.provider == p.provider for o in out))
+        if not out and first_error is not None:
+            raise first_error
+        return out
 
     # --- geração -----------------------------------------------------------------------------
     def _client(self, p: ActiveProvider) -> _BaseClient:
