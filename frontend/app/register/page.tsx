@@ -27,7 +27,17 @@ export default function RegisterPage() {
     setError(null);
     try {
       const displayName = String(form.get("display_name") ?? "").trim();
-      await post("/api/auth/register", { email, password, display_name: displayName || null });
+      const res = await post<{ verification_required: boolean }>("/api/auth/register", {
+        email,
+        password,
+        display_name: displayName || null,
+      });
+      if (res && res.verification_required === false) {
+        // Sem verificação de email: entra logo e vai para o Dashboard.
+        await post("/api/auth/login", { email, password });
+        window.location.replace("/dashboard");
+        return;
+      }
       setDoneFor(email);
     } catch (err) {
       setError(t(errorKey(err instanceof ApiError ? err.code : undefined)));
