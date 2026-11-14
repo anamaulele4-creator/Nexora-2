@@ -145,7 +145,7 @@ async def test_chat_completions_streaming(app, make_client, client, db_conn):
     chunks = [json.loads(d) for _, d in events[:-1]]
     text = "".join(c["choices"][0]["delta"].get("content", "") for c in chunks)
     assert text == "Um dois três"
-    assert chunks[0]["choices"][0]["delta"]["role"] == "assistant"
+    assert chunks[0]["choices"][0]["delta"]["role"] == "assistant" and chunks[0]["model"] == "qwen3:1.7b"
     assert chunks[-1]["choices"][0]["finish_reason"] == "stop" and chunks[-1]["usage"]["completion_tokens"] == 3
     import asyncio
     await asyncio.sleep(0.05)  # o registo de uso do stream é gravado numa tarefa à parte

@@ -255,7 +255,8 @@ async def chat_completions(body: ChatCompletionIn, request: Request, caller: Api
                 "usage": usage}
 
     try:  # erros de configuração em JSON, antes de abrir o stream
-        if not await ai.candidates(selection):
+        planned = await ai.candidates(selection)
+        if not planned:
             raise NoProviderError()
     except NoProviderError as exc:
         err = _error_for(exc)
@@ -270,7 +271,7 @@ async def chat_completions(body: ChatCompletionIn, request: Request, caller: Api
         return sse_event(None, data)
 
     async def events():
-        model = body.model
+        model = planned[0].model or body.model  # modelo real (não "auto") nos pedaços
         first = True
         status_code = 200
         reply: AIReply | None = None

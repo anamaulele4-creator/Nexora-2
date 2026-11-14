@@ -69,6 +69,7 @@ async def test_config_is_encrypted_and_never_returned(app, make_client, db_conn)
     secret_url = "https://ollama-privado.exemplo.net:8443/v1"
     r = await c.put("/api/admin/local-engine", json={"base_url": secret_url, "token": FAKE_TOKEN,
                                                      "temperature": 0.3, "max_tokens": 512, "context_length": 8192})
+    assert r.json()["temperature"] == 0.3
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["configured"] and body["token_configured"]
