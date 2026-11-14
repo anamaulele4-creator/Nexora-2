@@ -1,0 +1,26 @@
+# HTTPS automático (Let's Encrypt) para a DÁRIO API. O Ollama nunca passa por aqui diretamente.
+{
+	email {$ACME_EMAIL}
+}
+
+{$DARIO_DOMAIN} {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+	request_body {
+		max_size 5MB
+	}
+	reverse_proxy dario-api:8100 {
+		flush_interval -1          # streaming token a token
+		transport http {
+			read_timeout 15m           # respostas longas em CPU
+		}
+	}
+	log {
+		output stdout
+		format console
+	}
+}

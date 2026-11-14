@@ -1,0 +1,19 @@
+# Sobreposição para GPU NVIDIA (precisa do driver + NVIDIA Container Toolkit; o setup-server.sh instala-os)
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+  dario-api:
+    # nvidia-smi no diagnóstico (só leitura)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [utility]

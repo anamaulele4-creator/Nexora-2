@@ -11,6 +11,7 @@ para utilizadores com sessão (`/chat`). Ainda não há agente com ferramentas, 
 funcionais; isso chega nas etapas seguintes. Ver `docs/ARCHITECTURE.md`, `docs/ETAPA-1-RELATORIO.md` e
 **`docs/ADMIN-E-CHAT.md`** (inclui como criar uma chave gratuita do Gemini e colá-la em /admin).
 Motor local (Ollama, prioridade 1), gestor de modelos e API pública v1 compatível com OpenAI: **`docs/OLLAMA.md`**.
+Infraestrutura do **DÁRIO** (VPS com GPU, DÁRIO API, Model Manager, memória pgvector): **`docs/DARIO.md`** e pasta `dario/`.
 
 ## Requisitos
 
