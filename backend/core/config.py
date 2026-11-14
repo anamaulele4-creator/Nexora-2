@@ -111,6 +111,14 @@ class Settings(BaseSettings):
     chat_history_messages: int = Field(default=20, ge=2, le=100)
     chat_max_message_chars: int = Field(default=8000, ge=100, le=32000)
 
+    # Motor local (Ollama). URL e token ficam cifrados na BD (definidos em /admin), nunca aqui.
+    # CPU sem GPU é lento: o tempo limite por pedido é mais largo que o dos fornecedores na nuvem.
+    local_engine_timeout_seconds: float = Field(default=180, ge=5, le=1800)
+    local_engine_pull_timeout_seconds: float = Field(default=3600, ge=60, le=6 * 3600)
+
+    # API pública v1 (tokens emitidos em /admin) --------------------------------------------
+    api_v1_rate_limit_per_minute: int = Field(default=60, ge=1, le=100000)
+
     # Validadores ----------------------------------------------------------------------
     @field_validator("cors_origins", mode="before")
     @classmethod

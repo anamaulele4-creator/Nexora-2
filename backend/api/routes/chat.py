@@ -8,14 +8,20 @@ a mensagem do utilizador e a resposta só são gravadas juntas quando a IA respo
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi.responses import StreamingResponse
 from pydantic import Field, field_validator
 
-from ai_core.providers import ChatMessage
-from ai_core.router import AIRouter, AllProvidersFailed, NoProviderError
+from ai_core.ollama import NOT_CONFIGURED_MESSAGE, OllamaManager
+from ai_core.providers import PROVIDERS, AIReply, ChatMessage, ProviderError
+from ai_core.router import AIRouter, AllProvidersFailed, ModelSelection, NoProviderError
 from api.deps import client_info, current_principal, enforce_limit, get_db, safe_ip
+from api.sse import HEARTBEAT, SSE_HEADERS, SSE_PING, sse_event, with_heartbeat
 from api.schemas import _In
 from authentication.tokens import Principal
 from core.config import Settings
@@ -24,6 +30,10 @@ from core.errors import ApiError
 from security.audit import record_audit
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+log = logging.getLogger("connector_ai.chat")
+
+_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
+LOCAL_ENGINE_CODES = ("local_engine_unreachable", "local_engine_auth", "local_model_missing")
 
 SYSTEM_PROMPT = (
     "És o assistente do CONNECTOR AI. Responde de forma clara, útil e concisa, "
@@ -39,6 +49,27 @@ class ConversationIn(_In):
 
 class MessageIn(_In):
     content: str = Field(min_length=1, max_length=32000)
+    # Opcional: None = automático (motor local primeiro). "ollama" ou um fornecedor na nuvem.
+    provider: str | None = Field(default=None, max_length=20)
+    model: str | None = Field(default=None, max_length=200)
+
+    @field_validator("provider")
+    @classmethod
+    def _provider(cls, v: str | None) -> str | None:
+        if v in (None, "", "auto"):
+            return None
+        if v != "ollama" and v not in PROVIDERS:
+            raise ValueError("fornecedor desconhecido")
+        return v
+
+    @field_validator("model")
+    @classmethod
+    def _model(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        if not _MODEL_RE.match(v):
+            raise ValueError("nome de modelo inválido")
+        return v
 
     @field_validator("content")
     @classmethod
@@ -73,6 +104,17 @@ def _msg_out(r) -> dict:
 def _title_from(text: str) -> str:
     line = " ".join(text.split())
     return line if len(line) <= 60 else line[:57].rstrip() + "…"
+
+
+def ai_error(exc: Exception) -> ApiError:
+    """Erros da IA em respostas claras (nunca uma resposta inventada)."""
+    if isinstance(exc, NoProviderError):
+        return ApiError(503, exc.code, exc.message)
+    if isinstance(exc, AllProvidersFailed):
+        if exc.code in LOCAL_ENGINE_CODES:
+            return ApiError(503, exc.code or "local_engine_unreachable", exc.errors[-1].message[:500])
+        return ApiError(502, "ai_provider_error", f"O fornecedor de IA falhou: {exc.message}"[:500])
+    raise exc  # pragma: no cover
 
 
 async def _load_conversation(conn, conversation_id: uuid.UUID):
@@ -137,16 +179,13 @@ async def list_messages(conversation_id: uuid.UUID, principal: Principal = Depen
     return {"conversation": _conv_out(conv), "items": [_msg_out(r) for r in rows]}
 
 
-@router.post("/conversations/{conversation_id}/messages", status_code=status.HTTP_201_CREATED)
-async def send_message(conversation_id: uuid.UUID, body: MessageIn, request: Request,
-                       principal: Principal = Depends(current_principal), db: Database = Depends(get_db)) -> dict:
+async def _prepare(conversation_id: uuid.UUID, body: MessageIn, request: Request, principal: Principal,
+                   db: Database) -> tuple[dict, list[ChatMessage]]:
     settings: Settings = request.app.state.settings
     if len(body.content) > settings.chat_max_message_chars:
         raise ApiError(422, "message_too_long",
                        f"Mensagem demasiado longa (máximo {settings.chat_max_message_chars} caracteres)")
     await enforce_limit(request, "chat_message", str(principal.user_id), settings.chat_rate_limit_per_hour, 3600)
-
-    # 1. histórico (sob RLS)
     async with db.as_user(principal.user_id) as conn:
         conv = await _load_conversation(conn, conversation_id)
         history = await conn.fetch(
@@ -155,27 +194,21 @@ async def send_message(conversation_id: uuid.UUID, body: MessageIn, request: Req
                  order by created_at desc, id desc limit $2) h
                order by created_at, id""",
             conversation_id, settings.chat_history_messages)
-
     messages = [ChatMessage(r["role"], r["content"]) for r in history]
     messages.append(ChatMessage("user", body.content))
+    return dict(conv), messages
 
-    # 2. IA (fora de transações)
-    ai: AIRouter = request.app.state.ai_router
-    try:
-        reply = await ai.generate(messages, SYSTEM_PROMPT)
-    except NoProviderError as exc:
-        raise ApiError(503, "ai_unavailable", exc.message) from exc
-    except AllProvidersFailed as exc:
-        raise ApiError(502, "ai_provider_error", f"O fornecedor de IA falhou: {exc.message}"[:500]) from exc
 
-    # 3. grava as duas mensagens juntas
+async def _persist(db: Database, principal: Principal, conversation_id: uuid.UUID, conv: dict, content: str,
+                   reply: AIReply) -> dict:
+    """Grava a pergunta e a resposta juntas (e o uso de tokens)."""
     async with db.as_user(principal.user_id) as conn:
         await _load_conversation(conn, conversation_id)  # pode ter sido apagada entretanto
         user_row = await conn.fetchrow(
             """insert into public.messages (conversation_id, user_id, workspace_id, role, content)
                values ($1, $2, $3, 'user', $4)
                returning id, conversation_id, role, content, provider, model, created_at""",
-            conversation_id, principal.user_id, conv["workspace_id"], body.content)
+            conversation_id, principal.user_id, conv["workspace_id"], content)
         bot_row = await conn.fetchrow(
             """insert into public.messages (conversation_id, user_id, workspace_id, role, content, provider, model,
                                             input_tokens, output_tokens, created_at)
@@ -186,9 +219,9 @@ async def send_message(conversation_id: uuid.UUID, body: MessageIn, request: Req
         conv_row = await conn.fetchrow(
             """update public.conversations set last_message_at = $2, title = coalesce(title, $3)
                where id = $1 returning id, title, created_at, updated_at, last_message_at""",
-            conversation_id, bot_row["created_at"], _title_from(body.content))
+            conversation_id, bot_row["created_at"], _title_from(content))
 
-    # 4. uso (tokens) para o Dashboard — escrito pelo serviço
+    # uso (tokens) para o Dashboard — escrito pelo serviço
     if reply.input_tokens or reply.output_tokens:
         async with db.service() as conn:
             for metric, qty in (("llm_input_tokens", reply.input_tokens), ("llm_output_tokens", reply.output_tokens)):
@@ -200,3 +233,110 @@ async def send_message(conversation_id: uuid.UUID, body: MessageIn, request: Req
 
     return {"conversation": _conv_out(conv_row), "user_message": _msg_out(user_row),
             "assistant_message": _msg_out(bot_row)}
+
+
+def _selection(body: MessageIn) -> ModelSelection:
+    return ModelSelection(provider=body.provider, model=body.model if body.provider else None)
+
+
+@router.post("/conversations/{conversation_id}/messages", status_code=status.HTTP_201_CREATED)
+async def send_message(conversation_id: uuid.UUID, body: MessageIn, request: Request,
+                       principal: Principal = Depends(current_principal), db: Database = Depends(get_db)) -> dict:
+    conv, messages = await _prepare(conversation_id, body, request, principal, db)
+    ai: AIRouter = request.app.state.ai_router
+    try:  # IA fora de transações
+        reply = await ai.generate(messages, SYSTEM_PROMPT, _selection(body))
+    except (NoProviderError, AllProvidersFailed) as exc:
+        raise ai_error(exc) from exc
+    return await _persist(db, principal, conversation_id, conv, body.content, reply)
+
+
+@router.post("/conversations/{conversation_id}/messages/stream")
+async def stream_message(conversation_id: uuid.UUID, body: MessageIn, request: Request,
+                         principal: Principal = Depends(current_principal),
+                         db: Database = Depends(get_db)) -> StreamingResponse:
+    """Como ``send_message``, mas a resposta chega em Server-Sent Events.
+
+    Eventos: ``delta`` {text} · ``done`` {conversation, user_message, assistant_message} ·
+    ``error`` {code, message}. Se o cliente cortar a ligação (botão Parar), o texto já
+    recebido é gravado como resposta (se houver algum).
+    """
+    conv, messages = await _prepare(conversation_id, body, request, principal, db)
+    ai: AIRouter = request.app.state.ai_router
+    selection = _selection(body)
+    try:  # erros de configuração respondem já em JSON, antes de abrir o stream
+        if not await ai.candidates(selection):
+            raise NoProviderError()
+    except NoProviderError as exc:
+        raise ai_error(exc) from exc
+
+    async def events():
+        parts: list[str] = []
+        reply: AIReply | None = None
+        finished = False
+        try:
+            yield SSE_PING
+            async for item in with_heartbeat(ai.stream(messages, SYSTEM_PROMPT, selection)):
+                if item is HEARTBEAT:
+                    yield SSE_PING
+                elif isinstance(item, AIReply):
+                    reply = item
+                else:
+                    parts.append(item)
+                    yield sse_event("delta", {"text": item})
+            finished = True
+            if reply is None:  # pragma: no cover - os clientes terminam sempre com AIReply
+                raise AllProvidersFailed([ProviderError("ai", "Resposta vazia")])
+            saved = await _persist(db, principal, conversation_id, conv, body.content, reply)
+            yield sse_event("done", saved)
+        except (NoProviderError, AllProvidersFailed) as exc:
+            finished = True
+            err = ai_error(exc)
+            yield sse_event("error", {"code": err.code, "message": err.message})
+        except ApiError as exc:
+            finished = True
+            yield sse_event("error", {"code": exc.code, "message": exc.message})
+        finally:
+            text = "".join(parts).strip()
+            if not finished and text:
+                # o cliente parou a geração: guarda o que já tinha sido mostrado
+                partial = AIReply(text=text, provider=reply.provider if reply else (selection.provider or "ollama"),  # type: ignore[arg-type]
+                                  model=reply.model if reply else (selection.model or ""))
+                task = asyncio.create_task(_persist_quietly(db, principal, conversation_id, conv, body.content, partial))
+                _BACKGROUND.add(task)
+                task.add_done_callback(_BACKGROUND.discard)
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers=SSE_HEADERS)
+
+
+_BACKGROUND: set[asyncio.Task] = set()
+
+
+async def _persist_quietly(db, principal, conversation_id, conv, content, reply) -> None:
+    try:
+        await _persist(db, principal, conversation_id, conv, content, reply)
+    except Exception:  # noqa: BLE001 - conversa apagada entretanto, etc.
+        log.warning("não foi possível gravar a resposta interrompida")
+
+
+@router.get("/models")
+async def chat_models(request: Request, _: Principal = Depends(current_principal)) -> dict:
+    """Modelos que o utilizador pode escolher no chat (sem URLs nem chaves)."""
+    ai: AIRouter = request.app.state.ai_router
+    engine = await ai.local_engine()
+    local: dict = {"configured": bool(engine and engine.configured), "enabled": bool(engine and engine.enabled),
+                   "reachable": None, "default_model": engine.default_model if engine else None, "models": [],
+                   "warning": None}
+    if engine is None or not engine.configured or not engine.enabled:
+        local["warning"] = (engine.error if engine and engine.error else None) or NOT_CONFIGURED_MESSAGE
+    else:
+        assert engine.config is not None
+        mgr = OllamaManager(engine.config.base_url, engine.config.token, timeout=5, http=ai.http)
+        try:
+            local["models"] = [m["name"] for m in await mgr.tags() if m.get("name")]
+            local["reachable"] = True
+        except ProviderError as exc:
+            local["reachable"] = False
+            local["warning"] = exc.message
+    cloud = [{"provider": p.provider, "model": p.model} for p in await ai.active_providers()]
+    return {"local": local, "cloud": cloud}
